@@ -17,22 +17,22 @@
   function phasor(defs) {
     const d = G.makeDef('Phasor', 5, 3, 8, [
       { dir: 'in', row: 0, name: 'Hz' }, { dir: 'out', row: 0, name: 'phase' }, { dir: 'out', row: 2, name: 'wrap' },
-    ], 'Ramp 0→1 at the given frequency. The loop phase → Add → (GT, −1, Delay) → Switch → phase is 3 stages long, so it adds 3·Hz/fs per turn: three interleaved copies, each updated every third tick. "wrap" is 1 while the ramp wraps (3 ticks).');
+    ], 'Ramp 0→1 at the given frequency. phase + Hz/fs, minus 1 when it passes 1, into a flip-flop that holds the phase until the next tick. "wrap" is 1 on the tick the ramp wraps.');
     const b = G.builder(d, defs);
     b.block('mul', 'mul', 5, 3); b.block('add', 'add', 12, 3);
-    b.block('gt', 'gt', 20, 0); b.block('sub', 'add', 20, 6); b.block('dly', 'delay', 20, 11);
-    b.block('sw', 'switch', 27, 5);
-    b.konst('mul.in1', 'down', 2, 3 / FS);
+    b.block('gt', 'gt', 20, 0); b.block('sub', 'add', 20, 6);
+    b.block('sw', 'switch', 27, 5); b.block('ff', 'delay', 27, 13);
+    b.konst('mul.in1', 'down', 2, 1 / FS);
     b.konst('gt.in1', 'left', 2, 1);
     b.konst('sub.in1', 'left', 2, -1);
     const hz = b.net('port.in0', 'mul.in0', { value: 220 });
     knobNear(d, defs, hz, 1, 4, knob('Hz', 20, 2000, 'log'));
     b.net('mul.out0', 'add.in0');
-    b.net('add.out0', ['gt.in0', 'sub.in0', 'dly.in0']);
+    b.net('add.out0', ['gt.in0', 'sub.in0', 'sw.in2']);
     b.net('gt.out0', ['sw.in0', 'port.out1']);
     b.net('sub.out0', 'sw.in1');
-    b.net('dly.out0', 'sw.in2');
-    b.net('sw.out0', ['add.in1', 'port.out0']);
+    b.net('sw.out0', 'ff.in0');
+    b.net('ff.out0', ['add.in1', 'port.out0']);
     return d;
   }
 
@@ -54,13 +54,14 @@
 
   function decay(defs) {
     const d = G.makeDef('Decay', 4, 3, 8, [{ dir: 'in', row: 0, name: 'trig' }, { dir: 'out', row: 1, name: 'env' }],
-      'Percussive envelope: env = trig ? 1 : env·decay. The loop is 2 stages, so a trigger must last at least 2 ticks.');
+      'Percussive envelope: on a trigger the flip-flop is loaded with 1, otherwise with env·decay.');
     const b = G.builder(d, defs);
-    b.block('sw', 'switch', 12, 3); b.block('m', 'mul', 12, 12);
+    b.block('sw', 'switch', 10, 3); b.block('ff', 'delay', 17, 4); b.block('m', 'mul', 10, 12);
     b.konst('sw.in1', 'up', 2, 1);
-    b.konst('m.in1', 'down', 3, 0.9996, knob('decay', 0.99, 0.99999));
+    b.konst('m.in1', 'down', 3, 0.9998, knob('decay', 0.999, 0.99999));
     b.net('port.in0', 'sw.in0');
-    b.net('sw.out0', ['m.in0', 'port.out0']);
+    b.net('sw.out0', 'ff.in0');
+    b.net('ff.out0', ['m.in0', 'port.out0']);
     b.net('m.out0', 'sw.in2');
     return d;
   }
@@ -90,9 +91,9 @@
 
   function onePole(defs) {
     const d = G.makeDef('OnePole', 4, 3, 8, [{ dir: 'in', row: 1, name: 'x' }, { dir: 'out', row: 1, name: 'y' }],
-      'Low-pass filter y\' = (1−k)·y + k·x. The feedback loop (y → × → + → y) is 2 stages long.');
+      'Low-pass filter y[n] = (1−k)·y[n−1] + k·x[n]. The flip-flop holds y between ticks.');
     const b = G.builder(d, defs);
-    b.block('mb', 'mul', 5, 11); b.block('ma', 'mul', 14, 3); b.block('ad', 'add', 20, 10);
+    b.block('mb', 'mul', 5, 11); b.block('ma', 'mul', 14, 3); b.block('ad', 'add', 20, 10); b.block('ff', 'delay', 25, 11);
     b.block('kn', 'mul', 5, 17); b.block('k1', 'add', 10, 17);
     b.konst('kn.in1', 'down', 2, -1);
     b.konst('k1.in1', 'down', 2, 1);
@@ -103,7 +104,8 @@
     b.net('k1.out0', 'ma.in1');
     b.net('mb.out0', 'ad.in1');
     b.net('ma.out0', 'ad.in0');
-    b.net('ad.out0', ['ma.in0', 'port.out0']);
+    b.net('ad.out0', 'ff.in0');
+    b.net('ff.out0', ['ma.in0', 'port.out0']);
     return d;
   }
 
@@ -116,11 +118,12 @@
   // ---- examples --------------------------------------------------------------
   function exCounter(defs) {
     const r = G.makeSheet(), b = G.builder(r, defs);
-    b.block('add', 'add', 4, 2);
-    b.block('d1', 'delay', 12, 8); b.block('d2', 'delay', 18, 8);
-    b.block('scope', 'scope', 12, 0, { window: 16 });
+    b.block('add', 'add', 4, 2); b.block('ff', 'delay', 10, 3);
+    b.block('d1', 'delay', 12, 9); b.block('d2', 'delay', 18, 9);
+    b.block('scope', 'scope', 16, 0, { window: 16 });
     b.konst('add.in0', 'left', 2, 1, knob('step', 0, 4));
-    b.net('add.out0', ['add.in1', 'd1.in0', 'scope.in0']);
+    b.net('add.out0', 'ff.in0');
+    b.net('ff.out0', ['add.in1', 'd1.in0', 'scope.in0']);
     b.net('d1.out0', 'd2.in0');
     b.konst('d2.out0', 'right', 3, 0);
     return r;
@@ -165,7 +168,7 @@
 
   const EXAMPLES = [
     { title: '1 · Counter and pipeline', rate: 4, make: exCounter,
-      note: 'The Add writes its own input register: a 1-stage loop that counts. Each Delay passes the count one stage further, one tick later. Drag the "step" knob.' },
+      note: 'Add and flip-flop make a counter: the Add settles to count + step within the tick, and the flip-flop stores it at the clock edge. Each extra flip-flop holds the count one tick longer. Drag the "step" knob.' },
     { title: '2 · A tone (zoom into the VCO)', rate: FS, make: exTone,
       note: 'Zoom into the VCO with the mouse wheel to find its Phasor, and into that to see the registers that make the ramp.' },
     { title: '3 · Sequenced synth', rate: FS, make: exSynth,

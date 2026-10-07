@@ -43,7 +43,7 @@ class GridProcessor extends AudioWorkletProcessor {
       try { fn = new Function(m.code)(); } catch (err) { this.port.postMessage({ type: 'error', message: String(err) }); return; }
       const oldNames = this.names, oldS = this.s;
       this.fn = fn; this.names = m.regNames; this.adopt(oldNames, oldS);
-      this.p = m.params; this.v = new Float64Array(m.regNames.length);
+      this.p = m.params; this.v = new Float64Array(m.nNets);
       this.wins = m.wins; this.rings = new Rings(m.wins.length);
       this.sc = m.wins.map(() => new Float32Array(128)); this.sc1 = m.wins.map(() => new Float32Array(1));
     } else if (m.type === 'params') this.p = m.params;
@@ -124,9 +124,9 @@ registerProcessor('clockwork-grid', GridProcessor);
       this.prog = prog; this.wins = wins;
       this.fn = GW.instantiate(prog.code);
       this.s = Float64Array.from(prog.regNames, (n) => map.get(n) || 0);
-      this.v = this.s.slice();
+      this.v = new Float64Array(prog.nNets);
       this.rings = new Rings(wins.length);
-      this.post({ type: 'program', code: prog.code, regNames: prog.regNames, params: prog.params, wins });
+      this.post({ type: 'program', code: prog.code, regNames: prog.regNames, nNets: prog.nNets, params: prog.params, wins });
       if (this.owner === 'main') this.publish();
     }
 
@@ -148,7 +148,7 @@ registerProcessor('clockwork-grid', GridProcessor);
         this.node.connect(this.ctx.destination);
         this.node.port.onmessage = (e) => this.fromWorklet(e.data);
         const p = this.prog;
-        if (p) this.post({ type: 'program', code: p.code, regNames: p.regNames, params: p.params, wins: this.wins });
+        if (p) this.post({ type: 'program', code: p.code, regNames: p.regNames, nNets: p.nNets, params: p.params, wins: this.wins });
         this.post({ type: 'rate', rate: this.rate }); this.post({ type: 'running', on: this.running });
       }
       this.post({ type: 'take', state: { names: this.prog ? this.prog.regNames : [], values: this.s, ticks: this.ticks } });
@@ -193,7 +193,7 @@ registerProcessor('clockwork-grid', GridProcessor);
       this.publish();
     }
     publish() {
-      this.onSnap({ v: this.v.length === this.s.length ? this.v : this.s, ticks: this.ticks,
+      this.onSnap({ v: this.v, ticks: this.ticks,
         scopes: this.wins.map((w, k) => this.rings.view(k, this.rate >= 2000 ? 2 * w : w)) });
     }
     frame(t) {

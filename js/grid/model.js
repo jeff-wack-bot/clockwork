@@ -10,28 +10,28 @@
   // Pads are [x, y, name] in the block's unrotated local frame.
   const ATOMS = {
     add: { title: 'Add', sym: '+', w: 3, h: 3, ins: [[0, 0, 'a'], [0, 2, 'b']], outs: [[2, 1, '']], cost: 'adder',
-      eq: "y' = a + b", expr: (a) => `${a[0]} + ${a[1]}` },
+      eq: 'y = a + b', expr: (a) => `${a[0]} + ${a[1]}` },
     mul: { title: 'Multiply', sym: '×', w: 3, h: 3, ins: [[0, 0, 'a'], [0, 2, 'b']], outs: [[2, 1, '']], cost: 'multiplier',
-      eq: "y' = a × b", expr: (a) => `${a[0]} * ${a[1]}` },
+      eq: 'y = a × b', expr: (a) => `${a[0]} * ${a[1]}` },
     gt: { title: 'Greater than', sym: '>', w: 3, h: 3, ins: [[0, 0, 'a'], [0, 2, 'b']], outs: [[2, 1, '']], cost: 'comparator',
-      eq: "y' = (a > b) ? 1 : 0", expr: (a) => `(${a[0]} > ${a[1]} ? 1 : 0)` },
+      eq: 'y = (a > b) ? 1 : 0', expr: (a) => `(${a[0]} > ${a[1]} ? 1 : 0)` },
     switch: { title: 'Switch', sym: '?:', w: 3, h: 3, ins: [[0, 1, 'if'], [0, 0, 'then'], [0, 2, 'else']], outs: [[2, 1, '']], cost: 'mux',
-      eq: "y' = (if > 0) ? then : else", expr: (a) => `(${a[0]} > 0 ? ${a[1]} : ${a[2]})` },
-    delay: { title: 'Delay', sym: 'z⁻¹', w: 3, h: 1, ins: [[0, 0, '']], outs: [[2, 0, '']], cost: 'buffer',
-      eq: "y' = x", expr: (a) => a[0] },
+      eq: 'y = (if > 0) ? then : else', expr: (a) => `(${a[0]} > 0 ? ${a[1]} : ${a[2]})` },
+    delay: { title: 'Delay (flip-flop)', sym: 'z⁻¹', w: 3, h: 1, ins: [[0, 0, '']], outs: [[2, 0, '']], cost: 'buffer',
+      eq: 'y[n] = x[n−1]', expr: (a) => a[0] },
   };
   const SINKS = {
     dac: { title: 'DAC', sym: '🔊', w: 3, h: 3, ins: [[0, 1, '']], outs: [], eq: 'speaker = clip(x, −1, 1)' },
     scope: { title: 'Scope', sym: '∿', w: 10, h: 5, ins: [[0, 2, '']], outs: [], eq: '(display only)' },
   };
   const DOCS = {
-    add: 'Writes the sum of its input registers into its output register on every tick.',
-    mul: 'Writes the product of its input registers on every tick.',
-    gt: 'Writes 1 if a > b, else 0.',
-    switch: 'A multiplexer: writes "then" if "if" > 0, else "else".',
-    delay: 'Copies its input register into its output register: one more pipeline stage. Use it to balance path latencies.',
-    dac: 'Sends the register on its pad to the speakers. Reads the register every tick; between ticks the speaker holds the last value.',
-    scope: 'Plots the register on its pad over time. No effect on the computation.',
+    add: 'Logic: its output net carries the sum of its inputs, settled within the same tick.',
+    mul: 'Logic: its output net carries the product of its inputs, within the same tick.',
+    gt: 'Logic: outputs 1 if a > b, else 0.',
+    switch: 'Logic, a multiplexer: passes "then" if "if" > 0, else "else".',
+    delay: 'A flip-flop: the only IC with memory. Its output net is a register that takes the input\'s value at each clock edge. Every feedback loop needs one.',
+    dac: 'Sends the net on its pin to the speakers. Between ticks the speaker holds the last value.',
+    scope: 'Plots the net on its pin over time. No effect on the computation.',
   };
   const ATOM_ORDER = ['add', 'mul', 'gt', 'switch', 'delay'];
   const SINK_ORDER = ['dac', 'scope'];

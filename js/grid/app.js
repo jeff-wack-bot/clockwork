@@ -14,12 +14,35 @@
   };
   window.gapp = app;
 
+  // ---- visual style (the style lab) -----------------------------------------------
+  const Q = new URLSearchParams(location.search);
+  const EMBED = Q.get('embed') === '1';
+  const STYLE_KEY = 'clockwork.style';
+  const STYLES = {
+    ops: { label: 'Operations', options: { chip: 'IC packages', symbol: 'Signal-flow symbols', via: 'Special vias' } },
+    branch: { label: 'Branch points (copy)', options: { none: 'Nothing', dot: 'Solder dot', copyvia: 'Copy via' } },
+    dir: { label: 'Direction', options: { none: 'Nothing', arrows: 'Chevrons', flow: 'Flowing dashes', taper: 'Taper' } },
+    reg: { label: 'Registers', options: { plain: 'Plain trace', pour: 'Copper pour (region)', double: 'Double outline' } },
+  };
+  app.style = { ops: 'symbol', branch: 'dot', dir: 'none', reg: 'pour' };
+  try { if (!EMBED) Object.assign(app.style, JSON.parse(localStorage.getItem(STYLE_KEY) || '{}')); } catch (e) { /* keep defaults */ }
+  for (const k in STYLES) if (Q.has(k) && STYLES[k].options[Q.get(k)]) app.style[k] = Q.get(k);
+  app.netKind = (key) => { const r = app.running && app.running.netOf[key]; return r ? r.k : undefined; };
+  // Time for the flowing-dash animation; it stops when the clock stops.
+  let flowT = 0, flowLast = performance.now();
+  app.flowTime = () => {
+    const now = performance.now();
+    if (app.host && app.host.running) flowT += Math.min(0.1, (now - flowLast) / 1000) * 1.5;
+    flowLast = now;
+    return flowT;
+  };
+
   // ---- values -----------------------------------------------------------------
   app.valueOf = (key) => {
     const p = app.running, ref = p && p.netOf[key];
     if (!ref) return undefined;
     if (ref.k === 'p') return p.params[ref.i];
-    return app.snap && app.snap.v && ref.i < app.snap.v.length ? app.snap.v[ref.i] : 0;
+    return app.snap && app.snap.v && ref.v < app.snap.v.length ? app.snap.v[ref.v] : 0;
   };
   app.knobState = (key) => (app.compiled && app.compiled.knobState[key]) || 'ok';
   const written = (key) => { const r = app.compiled && app.compiled.netOf[key]; return r && r.k === 's'; };
@@ -29,7 +52,7 @@
   app.changed = function (structural) {
     if (structural !== false) app.version++;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => localStorage.setItem(STORE, JSON.stringify(app.project)), 500);
+    if (!EMBED) saveTimer = setTimeout(() => localStorage.setItem(STORE, JSON.stringify(app.project)), 500);
     if (!compileQueued) {
       compileQueued = true;
       requestAnimationFrame(() => { compileQueued = false; recompile(); renderInspector(); });
@@ -108,7 +131,7 @@
     if (e.button === 2 || app.tool === 'erase') { app.drag = { kind: 'erase', F: h.F, last: null, both: e.shiftKey }; eraseTo(h); return; }
     if (e.button !== 0) return;
     if (app.placing) { placeAt(h, e.shiftKey); return; }
-    if (app.tool === 'draw') { app.drag = { kind: 'draw', F: h.F, rid: null, last: null }; drawTo(h); return; }
+    if (app.tool === 'route') { app.route ? routeCommit(h) : routeStart(h); return; }
     if (app.tool === 'knob') { toggleKnob(h); return; }
     // select tool: knob → turn it; block → move it; region → select it; else pan
     const krid = knobAt(h);
@@ -127,7 +150,10 @@
       return;
     }
     const r = regionAt(h);
-    if (r) { app.sel = { kind: 'region', path: h.F.path, id: r.rid, F: h.F }; renderInspector(); app.view.dirty = true; return; }
+    if (r) {
+      app.sel = { kind: 'region', path: h.F.path, id: r.rid, F: h.F, run: trackAt(h.F.sheet, r.layer, h.x, h.y) };
+      renderInspector(); app.view.dirty = true; return;
+    }
     app.drag = { kind: 'pan', x: p.x, y: p.y, click: true, sx: p.x, sy: p.y };
   });
 
@@ -136,7 +162,7 @@
     if (d && d.kind === 'pan') { app.view.pan(p.x - d.x, p.y - d.y); d.x = p.x; d.y = p.y; }
     const h = app.view.locate(p.x, p.y);
     app.hover = h;
-    if (d && d.kind === 'draw' && h) drawTo(h);
+    if (app.route && h) routePreview(h);
     if (d && d.kind === 'erase' && h) eraseTo(h);
     if (d && d.kind === 'knob') {
       const kb = d.F.sheet.regions[d.rid].knob;
@@ -163,7 +189,7 @@
     if (!d) return;
     if (d.kind === 'pan' && d.click && Math.hypot(pos(e).x - d.sx, pos(e).y - d.sy) < 3) { app.sel = null; renderInspector(); }
     if (d.kind === 'move' && d.moved) app.changed();
-    if (d.kind === 'draw' || d.kind === 'erase') app.changed();
+    if (d.kind === 'erase') app.changed();
     app.view.dirty = true;
   });
 
@@ -176,6 +202,7 @@
   canvas.addEventListener('dblclick', (e) => {
     const p = pos(e), h = app.view.locate(p.x, p.y);
     if (!h) return;
+    if (app.tool === 'route') return;
     const b = h.occ && h.occ.block;
     if (b && b.type === 'comp') { zoomToBlock(h.F, b); return; }
     const krid = knobAt(h);
@@ -195,30 +222,90 @@
     else app.view.fitAll();
   }
 
-  // ---- painting -------------------------------------------------------------------
-  function drawTo(h) {
-    const d = app.drag;
-    if (h.F.path !== d.F.path || h.F.sheet !== d.F.sheet) return;
-    const sh = d.F.sheet, occ = G.occupancy(sh, app.project.defs);
-    if (!d.last) {
-      const cur = sh[app.layer][G.key(h.x, h.y)];
-      if (cur) d.rid = cur;
-      else {
-        if (!G.canPaint(sh, occ, app.layer, h.x, h.y)) return;
-        d.rid = G.newRegion(sh);
-        G.paint(sh, occ, app.layer, h.x, h.y, d.rid);
-      }
-      d.last = [h.x, h.y]; app.version++;
-      return;
-    }
-    let [x, y] = d.last;
-    while (x !== h.x || y !== h.y) {
-      const nx = x !== h.x ? x + Math.sign(h.x - x) : x, ny = x !== h.x ? y : y + Math.sign(h.y - y);
-      if (G.paint(sh, occ, app.layer, nx, ny, d.rid) === 'blocked') break;
-      x = nx; y = ny;
-    }
-    d.last = [x, y]; app.version++;
+  // ---- routing ----------------------------------------------------------------------
+  // Like a PCB router: click on a pin, a trace or empty board to start; the trace
+  // follows the cursor as an L (/ flips the corner); click to fix a corner; ending
+  // on a pin or another trace connects to it. Tab drops a via and changes layer.
+  // A trace may not cross another net on the same layer: that is what layers are for.
+  function lPath(a, b, hFirst) {
+    const cells = [[a[0], a[1]]];
+    let [x, y] = a;
+    const stepX = () => { while (x !== b[0]) { x += Math.sign(b[0] - x); cells.push([x, y]); } };
+    const stepY = () => { while (y !== b[1]) { y += Math.sign(b[1] - y); cells.push([x, y]); } };
+    if (hFirst) { stepX(); stepY(); } else { stepY(); stepX(); }
+    return cells;
   }
+  // Index of the last cell the trace can reach before something is in the way.
+  function reach(F, rid, layer, cells) {
+    const sh = F.sheet, occ = app.view.geom(sh).occ;
+    let good = 0;
+    for (let i = 1; i < cells.length; i++) {
+      const [x, y] = cells[i], k = G.key(x, y), end = i === cells.length - 1;
+      const other = sh[layer][k], o = layer === G.TOP ? occ.get(k) : null;
+      if (!G.inBounds(sh, x, y) || (o && !o.pad)) break;          // off the board, or an IC body
+      if (other && other !== rid && !end) break;                  // crossing another net
+      if (o && o.pad && other !== rid && !end) break;             // running over a pin would connect it
+      good = i;
+    }
+    return good;
+  }
+  function routeStart(h) {
+    const sh = h.F.sheet, k = G.key(h.x, h.y), o = app.view.geom(sh).occ.get(k);
+    if (!G.inBounds(sh, h.x, h.y) || (app.layer === G.TOP && o && !o.pad)) { toast('Start on a pin, a trace, or empty board.'); return; }
+    app.route = { F: h.F, layer: app.layer, rid: sh[app.layer][k] || null, last: [h.x, h.y], hFirst: true, preview: null };
+    routePreview(h);
+  }
+  function routePreview(h) {
+    const r = app.route;
+    if (!r || h.F.path !== r.F.path || h.F.sheet !== r.F.sheet) return;
+    const cells = lPath(r.last, [h.x, h.y], r.hFirst);
+    r.preview = { cells, good: reach(r.F, r.rid, r.layer, cells) };
+    app.view.dirty = true;
+  }
+  function routeCommit(h) {
+    const r = app.route;
+    routePreview(h);
+    if (!r.preview) return;
+    const sh = r.F.sheet, occ = G.occupancy(sh, app.project.defs);
+    const cells = r.preview.cells.slice(0, r.preview.good + 1);
+    const [ex, ey] = cells[cells.length - 1], ek = G.key(ex, ey);
+    const endsOn = sh[r.layer][ek], endPad = r.layer === G.TOP && occ.get(ek) && occ.get(ek).pad;
+    if (!r.rid) r.rid = G.newRegion(sh);
+    for (const [x, y] of cells) G.paint(sh, occ, r.layer, x, y, r.rid);
+    const blocked = r.preview.good < r.preview.cells.length - 1;
+    const connected = cells.length > 1 && ((endsOn && endsOn !== r.rid) || endPad);
+    r.last = [ex, ey];
+    app.version++; app.changed();
+    if (blocked) toast('Something is in the way. Go around it, or press Tab to drop a via and pass under on the other layer.');
+    else if (connected || cells.length === 1) endRoute();
+    else routePreview(h);
+  }
+  function endRoute() { app.route = null; app.view.dirty = true; }
+
+  // The track under a click: the chain of trace cells between junctions, pins and vias.
+  function trackAt(sh, layer, x, y) {
+    const rid = sh[layer][G.key(x, y)];
+    if (!rid) return [];
+    const occ = app.view.geom(sh).occ;
+    const nbrs = (cx, cy) => [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]].filter(([a, b]) => sh[layer][G.key(a, b)] === rid);
+    const node = (cx, cy) => { const k = G.key(cx, cy); return occ.has(k) || (sh.top[k] && sh.top[k] === sh.bot[k]) || nbrs(cx, cy).length > 2; };
+    if (node(x, y)) return [[layer, x, y]];
+    const seen = new Set([G.key(x, y)]);
+    const walk = ([cx, cy]) => {
+      const out = [];
+      while (!seen.has(G.key(cx, cy)) && !node(cx, cy)) {
+        seen.add(G.key(cx, cy)); out.push([layer, cx, cy]);
+        const next = nbrs(cx, cy).find(([a, b]) => !seen.has(G.key(a, b)));
+        if (!next) break;
+        [cx, cy] = next;
+      }
+      return out;
+    };
+    const [a, b] = nbrs(x, y);
+    const left = a ? walk(a) : [], right = b ? walk(b) : [];
+    return left.reverse().concat([[layer, x, y]], right);
+  }
+
   function eraseTo(h) {
     const d = app.drag;
     if (h.F.path !== d.F.path || h.F.sheet !== d.F.sheet) return;
@@ -233,13 +320,17 @@
     }
     d.last = [h.x, h.y]; app.version++;
   }
-  // Tab: change layer; in the middle of a stroke, drop a via where the brush is.
+  // Tab: change layer; while routing, drop a via where the trace is.
   function toggleLayer() {
-    const d = app.drag, next = app.layer === G.TOP ? G.BOT : G.TOP;
-    if (d && d.kind === 'draw' && d.last) {
-      const occ = G.occupancy(d.F.sheet, app.project.defs);
-      if (G.paint(d.F.sheet, occ, next, d.last[0], d.last[1], d.rid) === 'blocked') { toast('No via here: the top layer is covered by a block.'); return; }
-      app.version++;
+    const r = app.route, next = app.layer === G.TOP ? G.BOT : G.TOP;
+    if (r) {
+      const sh = r.F.sheet, occ = G.occupancy(sh, app.project.defs), [x, y] = r.last;
+      if (occ.has(G.key(x, y))) { toast('No via on a pin or under an IC.'); return; }
+      if (sh[next][G.key(x, y)] && sh[next][G.key(x, y)] !== r.rid) { toast('Another net is on the other layer here.'); return; }
+      if (!r.rid) { r.rid = G.newRegion(sh); G.paint(sh, occ, r.layer, x, y, r.rid); }
+      G.paint(sh, occ, next, x, y, r.rid);
+      r.layer = next;
+      app.version++; app.changed();
     }
     app.layer = next;
     updateToolbar(); app.view.dirty = true;
@@ -262,17 +353,19 @@
     if (b.type === 'comp' && h.F.def && (b.def === h.F.def.name || G.uses(app.project.defs, b.def, h.F.def.name))) {
       toast(`"${b.def}" can't go inside itself.`); return;
     }
-    if (!G.canPlace(h.F.sheet, app.project.defs, b)) { toast('Blocks need free cells (regions may only touch their pads).'); return; }
+    if (!G.canPlace(h.F.sheet, app.project.defs, b)) { toast('No room: an IC can only sit where traces touch its pins.'); return; }
     const nb = G.addBlock(h.F.sheet, app.project.defs, { type: b.type, def: b.def, x: b.x, y: b.y, rot: b.rot, window: b.type === 'scope' ? 512 : undefined });
     app.sel = { kind: 'block', path: h.F.path, id: nb.id, F: h.F };
     if (!keep) app.placing = null;
     updatePalette(); app.changed();
   }
 
-  function deleteSelection() {
+  // Delete removes the selected block, or the selected track; with Shift, the whole net.
+  function deleteSelection(wholeNet) {
     const s = app.sel;
     if (!s) return;
     if (s.kind === 'block') s.F.sheet.blocks = s.F.sheet.blocks.filter((b) => b.id !== s.id);
+    else if (!wholeNet && s.run && s.run.length) for (const [l, x, y] of s.run) G.erase(s.F.sheet, l, x, y);
     else G.removeRegion(s.F.sheet, s.id);
     app.sel = null; app.changed(); renderInspector();
   }
@@ -293,10 +386,17 @@
     const k = e.key.toLowerCase();
     if (e.key === 'Tab') { e.preventDefault(); toggleLayer(); }
     else if (e.key === ' ') { e.preventDefault(); spaceDown = true; }
-    else if (e.key === 'Escape') { if (app.placing) { app.placing = null; updatePalette(); } else zoomOut(); app.view.dirty = true; }
-    else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); }
+    else if (e.key === 'Escape') {
+      if (app.route) endRoute();
+      else if (app.placing) { app.placing = null; updatePalette(); }
+      else zoomOut();
+      app.view.dirty = true;
+    }
+    else if (e.key === 'Enter' && app.route) endRoute();
+    else if (e.key === '/' && app.route) { app.route.hFirst = !app.route.hFirst; if (app.hover) routePreview(app.hover); }
+    else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(e.shiftKey); }
     else if (k === 'v') setTool('select');
-    else if (k === 'w' || k === 'd') setTool('draw');
+    else if (k === 'w' || k === 'x') setTool('route');
     else if (k === 'e') setTool('erase');
     else if (k === 'k') setTool('knob');
     else if (k === 'r') rotate();
@@ -307,12 +407,12 @@
   window.addEventListener('keyup', (e) => { if (e.key === ' ') spaceDown = false; });
 
   // ---- toolbar ---------------------------------------------------------------------
-  function setTool(t) { app.tool = t; app.placing = null; updateToolbar(); updatePalette(); }
+  function setTool(t) { app.tool = t; app.placing = null; app.route = null; updateToolbar(); updatePalette(); app.view.dirty = true; }
   function updateToolbar() {
     document.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === app.tool && !app.placing));
     $('#btn-layer').textContent = app.layer === G.TOP ? 'Layer: top' : 'Layer: bottom';
     $('#btn-layer').classList.toggle('bot', app.layer === G.BOT);
-    canvas.style.cursor = app.tool === 'draw' || app.tool === 'erase' || app.placing ? 'crosshair' : 'default';
+    canvas.style.cursor = app.tool === 'route' || app.tool === 'erase' || app.placing ? 'crosshair' : 'default';
   }
   document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
   $('#btn-layer').addEventListener('click', toggleLayer);
@@ -357,7 +457,7 @@
     s += '<h3>Library</h3>';
     for (const n of Object.keys(app.project.defs).sort()) s += item('def', n, '▣', n, app.project.defs[n].description || '');
     s += '<div class="pbuttons"><button id="btn-newdef">+ New block</button></div>';
-    s += '<p class="dim small">Constants are regions nobody writes. Paint one onto an input pad and give it a handle with the knob tool (K).</p>';
+    s += '<p class="dim small">A constant is a net nobody writes. Route a short trace from an input pin, then give it a handle with the knob tool (K).</p>';
     $('#palette').innerHTML = s;
   }
   $('#palette').addEventListener('click', (e) => {
@@ -435,7 +535,7 @@
     const cells = G.cellsOf(F.sheet, rid);
     const vias = cells.filter(([l, x, y]) => l === G.TOP && F.sheet.bot[G.key(x, y)] === rid).length;
     const w = written(key), st = app.knobState(key), v = app.valueOf(key);
-    let h = `<h2>Register ${rid}</h2><p class="dim small">${where(F)} · ${cells.length} cells${vias ? `, ${vias} via${vias > 1 ? 's' : ''}` : ''}</p>`;
+    let h = `<h2>Net ${rid}</h2><p class="dim small">${where(F)} · ${cells.length} cells${vias ? `, ${vias} via${vias > 1 ? 's' : ''}` : ''} · a register</p>`;
     h += `<div class="eq">${esc(GW.fmt(v) || '—')}</div>`;
     if (w) {
       h += '<p>Written by a block on every tick.</p>';
@@ -455,7 +555,8 @@
       h += `<label class="field"><span>Scale</span><select data-prop="knob.scale">${['lin', 'log'].map((x) => `<option ${k.scale === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>`;
       h += '<p><button data-act="rmknob">Remove handle</button></p>';
     } else if (!w) h += '<p class="dim small">Use the knob tool (K) on one of its cells to give it a handle.</p>';
-    h += '<p><button data-act="delete" class="danger">Delete region</button></p>';
+    if (app.sel && app.sel.run && app.sel.run.length) h += `<p class="dim small">Selected track: ${app.sel.run.length} cell(s), shown white. Delete removes it; Shift+Delete removes the whole net.</p>`;
+    h += '<p><button data-act="delete" class="danger">Delete track</button> <button data-act="deletenet" class="danger">Delete net</button></p>';
     return h;
   }
 
@@ -466,19 +567,15 @@
     if (c.errors.length) h += '<h3 class="err">Errors</h3><ul class="err">' + c.errors.map((e) => `<li>${esc(e.msg)}</li>`).join('') + '</ul><p class="dim small">The last error-free design keeps running.</p>';
     const r = c.resources;
     h += `<table class="res">
-      <tr><td>Registers written by blocks</td><td>${c.nState}</td></tr>
-      <tr><td>Constant registers</td><td>${c.params.length}</td></tr>
+      <tr><td>Registers (flip-flop outputs)</td><td>${c.nState}</td></tr>
+      <tr><td>Wires (settle within a tick)</td><td>${c.nNets - c.nState}</td></tr>
+      <tr><td>Constants</td><td>${c.params.length}</td></tr>
       <tr><td>Adders</td><td>${r.adder}</td></tr><tr><td>Multipliers</td><td>${r.multiplier}</td></tr>
       <tr><td>Comparators</td><td>${r.comparator}</td></tr><tr><td>Switches</td><td>${r.mux}</td></tr>
-      <tr><td>Delays</td><td>${r.buffer}</td></tr>
-      <tr class="sum"><td>Critical path</td><td>1 op</td></tr></table>`;
-    h += '<p class="dim small">Every region is a register, so every block is its own pipeline stage: the logic between registers is always a single operation. The price is latency.</p>';
-    h += '<h3>Feedback loops</h3>';
-    if (!c.loops.length) h += '<p class="dim small">None.</p>';
-    else {
-      h += '<ul class="loops">' + c.loops.map((l) => `<li><b>${l.latency} stage${l.latency > 1 ? 's' : ''}</b> <span class="dim">${esc(l.regions.join(' → '))}</span></li>`).join('') + '</ul>';
-      h += '<p class="dim small">A loop of k stages takes k ticks to go round, so it behaves like k interleaved copies, each updated every k-th tick.</p>';
-    }
+      <tr><td>Flip-flops</td><td>${r.buffer}</td></tr></table>`;
+    h += `<h3>Critical path: ${c.critDepth} operation${c.critDepth === 1 ? '' : 's'}</h3>
+      <p class="dim small">The longest chain of logic between flip-flops. On real hardware all of it must settle within one clock period (${(1e6 / G.FS).toFixed(1)} µs here). Putting a flip-flop in the middle of the chain (pipelining) shortens it, at the cost of one tick of delay.</p>`;
+    if (c.critical.length) h += `<ol class="crit small">${c.critical.map((x) => `<li>${esc(x.name)} <span class="dim">${esc(x.path)}</span></li>`).join('')}</ol>`;
     if (c.warnings.length) h += `<details><summary>${c.warnings.length} warning(s)</summary><ul>${c.warnings.map((w) => `<li>${esc(w.path)}: ${esc(w.msg)}</li>`).join('')}</ul></details>`;
     h += `<h3>Colour = value</h3><div class="legend"><div class="bar neg"></div><div class="bar pos"></div></div>
       <div class="legend-labels"><span>−10⁴</span><span>−1</span><span>0</span><span>1</span><span>10⁴</span></div>`;
@@ -490,7 +587,8 @@
     const act = e.target.dataset && e.target.dataset.act, s = app.sel;
     if (!act) return;
     if (act === 'code') { $('#code-dlg pre').textContent = app.compiled.code; $('#code-dlg').showModal(); return; }
-    if (act === 'delete') return deleteSelection();
+    if (act === 'delete') return deleteSelection(false);
+    if (act === 'deletenet') return deleteSelection(true);
     if (!s) return;
     if (s.kind === 'block') {
       const b = s.F.sheet.blocks.find((x) => x.id === s.id), def = b && app.project.defs[b.def];
@@ -544,7 +642,8 @@
   function updateStatus() {
     const h = app.hover;
     if (!h) { $('#status').textContent = ''; return; }
-    let s = (h.F.chain.length ? 'Root › ' + h.F.chain.join(' › ') : 'Root') + `   cell ${h.x},${h.y}   ${app.layer === G.TOP ? 'top' : 'bottom'} layer`;
+    let s = (h.F.chain.length ? 'Board › ' + h.F.chain.join(' › ') : 'Board') + `   ${h.x},${h.y}   ${app.layer === G.TOP ? 'top' : 'bottom'} layer`;
+    if (app.route) s += '   ·   routing: click = corner, / = flip, Tab = via, Esc = done';
     const r = regionAt(h);
     if (r) {
       const key = h.F.path + r.rid;
@@ -582,8 +681,45 @@
   function loadExample(i) {
     loadProject(GW.exampleProject(i, app.project ? app.project.defs : null));
     app.host.reset(); setRate(GW.EXAMPLES[i].rate); app.host.setRunning(true); updateClock();
-    toast(GW.EXAMPLES[i].note, 8000);
+    if (!EMBED) toast(GW.EXAMPLES[i].note, 8000);
   }
+
+  // Fly straight into a chain of ICs, e.g. "VCO>Phasor" (used by the style gallery).
+  function focusOn(spec) {
+    let F = app.view.rootFrame(), rect = null;
+    for (const name of spec.split('>')) {
+      const b = F.sheet.blocks.find((x) => x.type === 'comp' && x.def === name);
+      if (!b) break;
+      const fp = G.footprint(b, app.project.defs);
+      rect = [F.ox + b.x * F.sc, F.oy + b.y * F.sc, F.ox + (b.x + fp.w) * F.sc, F.oy + (b.y + fp.h) * F.sc];
+      F = app.view.child(F, b);
+    }
+    if (!rect) return;
+    app.view.fitRect(rect[0], rect[1], rect[2], rect[3], 0.03);
+    Object.assign(app.view.cam, app.view.target);
+    app.view.dirty = true;
+  }
+
+  function renderStyleMenu() {
+    let h = '';
+    for (const k in STYLES) {
+      h += `<fieldset><legend>${STYLES[k].label}</legend>`;
+      for (const [v, label] of Object.entries(STYLES[k].options)) {
+        h += `<label><input type="radio" name="st-${k}" value="${v}" ${app.style[k] === v ? 'checked' : ''}> ${label}</label>`;
+      }
+      h += '</fieldset>';
+    }
+    h += '<p class="dim small"><a href="styles.html" target="_blank">Compare all styles side by side →</a></p>';
+    $('#style-pop').innerHTML = h;
+  }
+  $('#btn-style').addEventListener('click', () => { $('#style-pop').hidden = !$('#style-pop').hidden; renderStyleMenu(); });
+  $('#style-pop').addEventListener('change', (e) => {
+    const k = e.target.name && e.target.name.slice(3);
+    if (!STYLES[k]) return;
+    app.style[k] = e.target.value;
+    localStorage.setItem(STYLE_KEY, JSON.stringify(app.style));
+    app.view.dirty = true;
+  });
   $('#btn-export').addEventListener('click', () => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(app.project)], { type: 'application/json' }));
@@ -613,9 +749,13 @@
   app.view = new GW.View(app, canvas);
   $('#rate').value = 1;
 
+  if (EMBED) document.body.classList.add('embed');
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(STORE)); } catch (e) { saved = null; }
-  if (saved && saved.root && saved.version === 2) { loadProject(saved); updateClock(); }
+  try { saved = EMBED ? null : JSON.parse(localStorage.getItem(STORE)); } catch (e) { saved = null; }
+  if (Q.has('example')) loadExample(Number(Q.get('example')) || 0);
+  else if (saved && saved.root && saved.version === 2) { loadProject(saved); updateClock(); }
   else loadExample(2);
+  if (Q.has('rate')) setRate(Math.min(RATE_MAX, Math.max(RATE_MIN, Number(Q.get('rate')) || RATE_MAX)));
+  if (Q.has('focus')) setTimeout(() => focusOn(Q.get('focus')), 100);
   setTool('select');
 })();

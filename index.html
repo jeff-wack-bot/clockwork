@@ -2,82 +2,77 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Clockwork — a transparent dataflow synthesizer</title>
+  <title>Clockwork Board — nets as registers</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/grid.css">
 </head>
 <body>
   <header id="top">
-    <div class="brand">⚙ Clockwork</div>
-    <button id="btn-audio" title="Start or stop the 48 kHz audio clock">▶ Start audio</button>
+    <div class="brand">⚙ Clockwork <span>Board</span></div>
+    <button id="btn-audio" title="Switch the DAC (speaker output) on or off">▶ Start audio</button>
     <div class="group clock">
-      <span class="dim">Clock:</span>
-      <label title="Run the design at the audio sample rate"><input type="radio" name="mode" value="audio"> audio <b id="fs"></b></label>
-      <label title="Run the design slowly on the main thread, so you can watch every value change"><input type="radio" name="mode" value="slow"> slow</label>
-      <span id="slow-controls">
-        <input type="range" id="slow-rate" min="0" max="1" step="0.001" title="Slow clock rate">
-        <span id="slow-rate-label" class="mono"></span>
-        <button id="btn-pause" title="Pause / run the slow clock">Pause</button>
-      </span>
-      <button id="btn-step" title="Advance exactly one tick (Space)">Step</button>
-      <button id="btn-reset" title="Clear every register to 0 (hardware reset)">Reset</button>
+      <span class="dim">Clock</span>
+      <input type="range" id="rate" min="0" max="1" step="0.001" title="Clock rate: far right is real time (one tick per audio sample)">
+      <span id="rate-label" class="mono"></span>
+      <button id="btn-run" title="Pause or run the clock">Pause</button>
+      <button id="btn-step" title="Advance exactly one tick (.)">Step</button>
+      <button id="btn-reset" title="Clear every written register to 0">Reset</button>
       <span id="ticks" class="mono">tick 0</span>
     </div>
+    <div class="group tools">
+      <button data-tool="select" title="Select, move blocks, turn knobs (V)">Select</button>
+      <button data-tool="route" title="Route traces: click to start, click for corners, / flips the corner, Tab drops a via, Esc ends (W)">Route</button>
+      <button data-tool="erase" title="Scrub away traces on the active layer; Shift = both layers; right-drag erases in any tool (E)">Erase</button>
+      <button data-tool="knob" title="Add or remove a handle on a net nobody writes (K)">Knob</button>
+      <button id="btn-layer" title="Active layer (Tab)">Layer: top</button>
+    </div>
     <div class="spacer"></div>
-    <select id="examples" title="Load an example patch"></select>
-    <button id="btn-code" title="Show the program the patch compiles to">Code</button>
-    <button id="btn-export" title="Download the project as JSON">Export</button>
-    <button id="btn-import" title="Load a project or library JSON file">Import</button>
-    <button id="btn-help" title="How this works">?</button>
-    <a href="grid.html" style="color:#5ec8e5" title="The spatial prototype: registers as regions on a grid">Grid prototype →</a>
+    <button id="btn-style" title="Try different ways of drawing operations, branch points, direction and registers">Style ▾</button>
+    <select id="examples"></select>
+    <button id="btn-export">Export</button>
+    <button id="btn-import">Import</button>
+    <button id="btn-help">?</button>
+    <a class="link" href="index_old.html" title="The original patch editor">Patch editor</a>
   </header>
-
   <div id="main">
     <aside id="palette"></aside>
     <section id="center">
-      <div id="crumbs"></div>
       <div id="banner"></div>
-      <svg id="canvas"></svg>
+      <canvas id="grid"></canvas>
+      <div id="status" class="mono"></div>
       <div id="toast"></div>
+      <div id="style-pop" hidden></div>
     </section>
     <aside id="inspector"></aside>
   </div>
 
   <dialog id="code-dlg">
     <h2>Compiled program</h2>
-    <p class="dim small">This is exactly what runs on every audio block. Each wire is a variable <code>nK</code>; each unit delay is a variable that keeps its value between ticks. Constants come from <code>p[]</code> so turning a knob never recompiles.</p>
+    <p class="dim small">Every block computes from the registers as they are now, then every register latches at once.</p>
     <pre class="code"></pre>
     <button class="close">Close</button>
   </dialog>
 
   <dialog id="help-dlg">
-    <h2>How Clockwork works</h2>
-    <p><b>One clock.</b> 48 000 times per second, every block computes exactly once. Each wire carries one number per tick.</p>
-    <p><b>Seven atoms.</b> Constant, Copy, Add, Multiply, Unit delay, Switch, Greater-than. Everything else — oscillators, sequencers, envelopes, filters — is built from them. Open any library block to see how.</p>
-    <p><b>Unit delay = register.</b> It outputs what its input was on the previous tick. Any feedback loop must pass through one; a loop without a delay is a <i>combinational loop</i> and is rejected, just as in FPGA design.</p>
-    <p><b>Explicit fan-out.</b> An output drives exactly one input. Use Copy to send a signal to two places.</p>
-    <p><b>Clock enables.</b> To run something slower than the clock (a sequencer step, a sample-and-hold), put a Switch in front of a register so it only updates when an "enable" pulse is 1. See <i>Sample&amp;Hold</i>, <i>Counter4</i>, <i>Seq4</i>.</p>
-    <p><b>Control panels.</b> Inside a composite, select a Constant and tick "Show as a control". It becomes a knob, toggle or button on every instance's face.</p>
-    <h3>Editing</h3>
-    <ul>
-      <li>Click or drag blocks from the left palette. Drag from an output port (right side) to an input port (left side) to wire.</li>
-      <li>Drag a wire off an input to move or remove it. Click a wire and press Delete to remove it.</li>
-      <li>Shift-click or shift-drag to select several blocks; <kbd>Ctrl+G</kbd> groups them into a new composite block.</li>
-      <li>Double-click a composite to open it (<kbd>Esc</kbd> goes back up). Double-click a constant or knob to type a value.</li>
-      <li>Drag the background to pan, scroll to zoom, <kbd>F</kbd> to fit. <kbd>Ctrl+D</kbd> duplicates.</li>
-      <li>Slow clock: watch values tick; <kbd>Space</kbd> or Step advances one tick.</li>
-    </ul>
-    <p class="dim small">Your project autosaves in this browser. Use Export/Import to move it elsewhere.</p>
+    <h2>Clockwork Board</h2>
+    <p><b>ICs and nets.</b> Blocks are ICs with pins. A net is a set of connected traces carrying one number, shown as the trace colour. Logic ICs (add, multiply, compare, switch) settle within the tick, like gates on a real board.</p>
+    <p><b>Flip-flops are the registers.</b> The Delay IC is a flip-flop: the net it drives is a register that only changes at the clock edge. Every feedback loop needs one; a loop without one is an error. The right-hand panel shows the critical path: the longest chain of logic between flip-flops.</p>
+    <p><b>Unwritten nets are constants.</b> Route a short trace from an input pin and give it a handle with the knob tool. A net that an IC drives can't have a handle.</p>
+    <p><b>Routing.</b> With Route (W): click a pin, a trace or empty board to start. Click to place corners and press / to flip the corner. Finish on a pin or a trace to connect. A trace can't cross another net on the same layer: press Tab to drop a via and continue on the bottom layer, which passes under everything. Click a trace with Select to pick the track between junctions; Delete removes it, Shift+Delete removes the whole net.</p>
+    <p><b>Style lab.</b> The Style menu changes how operations, branch points, direction and registers are drawn. <a href="styles.html">Compare them side by side.</a></p>
+    <p><b>Zoom is navigation.</b> Every composite IC shows its own board inside. Scroll in until its traces are big and you are working inside it. The definition is shared, but each instance keeps its own knob values. Double-click an IC to fly into it, Z or Esc to back out, H to see everything.</p>
+    <p><b>One clock.</b> The slider runs the design from 0.5 ticks/s up to real time (48 000 ticks/s, one per audio sample). With audio on, the speaker holds the DAC between ticks, so slow clocks are clicks and real time is sound.</p>
+    <h3>Keys</h3>
+    <p>V select · W route · E erase · K knob · Tab layer/via · / flip corner · Esc end route · R rotate · Delete · Space-drag or middle-drag pan · wheel zoom · . step</p>
     <button class="close">Close</button>
   </dialog>
+  <input type="file" id="file-input" accept=".json" hidden>
 
-  <input type="file" id="file-input" accept=".json,application/json" hidden>
-
-  <script src="js/blocks.js"></script>
-  <script src="js/compiler.js"></script>
-  <script src="js/library.js"></script>
-  <script src="js/engine.js"></script>
-  <script src="js/editor.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/grid/model.js"></script>
+  <script src="js/grid/compiler.js"></script>
+  <script src="js/grid/library.js"></script>
+  <script src="js/grid/engine.js"></script>
+  <script src="js/grid/view.js"></script>
+  <script src="js/grid/app.js"></script>
 </body>
 </html>

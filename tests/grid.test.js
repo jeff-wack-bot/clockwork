@@ -14,7 +14,7 @@ function run(prog, N) {
   const fn = instantiate(prog.code);
   const s = new Float64Array(prog.nState), d = new Float32Array(N);
   const sc = prog.scopePaths.map(() => new Float64Array(N));
-  fn(N, prog.params, s, d, sc, new Float64Array(prog.nState));
+  fn(N, prog.params, s, d, sc, new Float64Array(prog.nNets));
   return { s, d, sc };
 }
 const defs = L.starterDefs();
@@ -54,16 +54,26 @@ test('rotation moves the pads', () => {
   assert.deepStrictEqual(fp.pads.map((p) => [p.x, p.y]), [[0, 0], [0, 2]]);
 });
 
-test('counter: a 1-stage loop counts, delays shift it one tick per stage', () => {
+test('counter: an Add and a flip-flop count; more flip-flops hold older counts', () => {
   const p = compile(L.exampleProject(0));
   assert.ok(p.ok, JSON.stringify(p.errors));
-  assert.deepStrictEqual(p.loops.map((l) => l.latency), [1]);
   const { sc, s } = run(p, 5);
   assert.deepStrictEqual(Array.from(sc[0]), [0, 1, 2, 3, 4]);
   assert.deepStrictEqual(Array.from(s).sort((a, b) => a - b), [3, 4, 5]); // after 5 ticks: count 5, 4, 3
 });
 
-test('Phasor at 480 Hz: period of 100 ticks, held for 3 ticks (loop latency 3)', () => {
+test('a feedback loop without a flip-flop is an error', () => {
+  const r = G.makeSheet(), b = G.builder(r, defs);
+  b.block('add', 'add', 4, 2);
+  b.konst('add.in0', 'left', 2, 1);
+  b.net('add.out0', 'add.in1');
+  const p = compile({ root: r, defs, values: {} });
+  assert.ok(!p.ok);
+  assert.match(p.errors[0].msg, /without a flip-flop/);
+  assert.deepStrictEqual(p.problemPaths, ['b1']);
+});
+
+test('Phasor at 480 Hz: a period of exactly 100 ticks', () => {
   const r = G.makeSheet(), b = G.builder(r, defs);
   b.block('ph', 'comp', 4, 0, { def: 'Phasor' });
   b.block('s1', 'scope', 12, 0); b.block('s2', 'scope', 12, 6);
@@ -71,15 +81,14 @@ test('Phasor at 480 Hz: period of 100 ticks, held for 3 ticks (loop latency 3)',
   b.net('ph.out0', 's1.in0'); b.net('ph.out1', 's2.in0');
   const p = compile({ root: r, defs, values: {} });
   assert.ok(p.ok, JSON.stringify(p.errors));
+  assert.strictEqual(p.nState, 1);
   const { sc } = run(p, 1200);
   const phase = Array.from(sc[0]);
   assert.ok(Math.max(...phase) <= 1 && Math.min(...phase) >= 0);
   const wraps = phase.map((x, i) => (i > 0 && x < phase[i - 1] ? i : -1)).filter((i) => i > 0);
-  // the ramp only moves every 3rd tick, so wrap intervals are multiples of 3 averaging 100
-  for (let k = 1; k < wraps.length; k++) assert.strictEqual((wraps[k] - wraps[k - 1]) % 3, 0);
-  const mean = (wraps[wraps.length - 1] - wraps[0]) / (wraps.length - 1);
-  assert.ok(Math.abs(mean - 100) < 1.5, 'mean period ' + mean);
-  assert.strictEqual(phase[301], phase[302]);   // staircase of 3 identical ticks
+  assert.ok(wraps.length >= 10);
+  for (let k = 1; k < wraps.length; k++) assert.strictEqual(wraps[k] - wraps[k - 1], 100);
+  assert.notStrictEqual(phase[301], phase[302]);   // it moves every tick now
 });
 
 test('an outer knob overrides the inner default; inner knobs on written registers are dead', () => {
@@ -97,7 +106,7 @@ test('per-instance knob values are stored by path', () => {
   assert.deepStrictEqual(Array.from(compile(proj).params), Array.from(a.params));
 });
 
-test('two writers on one region is an error', () => {
+test('two writers on one net is an error', () => {
   const r = G.makeSheet(), b = G.builder(r, defs);
   b.block('a', 'delay', 0, 0); b.block('c', 'delay', 0, 2);
   const occ = G.occupancy(r, defs), rid = G.newRegion(r);
@@ -110,7 +119,7 @@ test('two writers on one region is an error', () => {
 test('sequenced synth: audible, not clipping, steps through the sequence', () => {
   const p = compile(L.exampleProject(2));
   assert.ok(p.ok, JSON.stringify(p.errors));
-  assert.deepStrictEqual(p.loops.map((l) => l.latency), [2, 2, 3, 3, 3]);
+  assert.strictEqual(p.nState, 5);  // three phasors, an envelope and a filter
   const N = 48000 * 2, { d } = run(p, N);
   const peak = Math.max(...Array.from(d, Math.abs));
   assert.ok(peak > 0.05 && peak < 0.95, 'peak ' + peak);

@@ -6,12 +6,15 @@ on **one global 48 kHz clock**, and nothing happens under the hood: you can see
 the compiled program, the live value on every wire, the "hardware" your design
 uses, and its critical path.
 
+**Live demo:** https://jeff-wack-bot.github.io/clockwork/ (style lab: https://jeff-wack-bot.github.io/clockwork/styles.html)
+
 There are two front-ends:
 
-* `index.html` is the **patch editor** (blocks and wires).
-* `grid.html` is the **grid prototype**: registers are painted regions, crossings use a second
-  layer, constants have handles instead of panels, zooming in is how you enter a block, and a
-  single slider sets the clock from 0.5 Hz up to real time. See [GRID-PLAN.md](GRID-PLAN.md).
+* `index.html` is the **board** prototype. ICs are wired with traces on two layers, each net is
+  a register whose colour is its value, constants have handles instead of panels, zooming in is
+  how you enter an IC, and a single slider sets the clock from 0.5 Hz up to real time. See
+  [GRID-PLAN.md](GRID-PLAN.md).
+* `index_old.html` is the original **patch editor** (blocks and wires).
 
 See [PLAN.md](PLAN.md) for the design, and for the decisions made where the
 brief left room for interpretation.
@@ -21,7 +24,7 @@ brief left room for interpretation.
 No build step and no dependencies. Either:
 
 * open `index.html` directly in a recent Chrome/Edge/Firefox, or
-* serve the folder: `python3 -m http.server` → http://localhost:8000
+* serve the folder: `python3 -m http.server 8000 --bind 127.0.0.1` → http://127.0.0.1:8000/
 
 Then press **▶ Start audio**. The default patch is a sequenced synth. To watch
 it tick instead, choose the **slow** clock and press **Step** (or Space).
@@ -85,9 +88,9 @@ js/app.js         palette, inspector, navigation, persistence
 tests/test.js     node tests
 ```
 
-## Grid prototype in two minutes
+## Board prototype in two minutes
 
-1. Open `grid.html`. The sequenced synth is loaded and running at real time.
+1. Open `index.html`. The sequenced synth is loaded and running at real time.
    Press **▶ Start audio** to hear it.
 2. Drag the **Clock** slider left: the sound turns into steps, then clicks, and
    you can watch each register change colour tick by tick.
@@ -96,5 +99,6 @@ tests/test.js     node tests
 4. Keep scrolling into the **VCO** and then its **Phasor**: the feedback loop
    drops to the bottom layer (the darker, thinner track) through vias (the circles).
 5. Make something: pick **Add** from the palette and click to place it. Switch
-   to **Draw** (W) and paint from a pad. Press **Tab** mid-stroke to dive under
-   another region. Use **Knob** (K) on an unwritten region to give it a handle.
+   to **Route** (W), click a pin, click corners, and finish on another pin. Press
+   **Tab** mid-route to drop a via and pass under another net. Use **Knob** (K)
+   on a net nobody writes to give it a handle.

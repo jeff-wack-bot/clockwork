@@ -78,3 +78,60 @@ inside, zoom in.
 12. **Not in this prototype:** group-selection-into-composite, composite
     rotation, undo, autorouting in the UI (the library is laid out with a small
     maze router, but users route by hand), fixed-point.
+
+## Revision: board (trace design) interface
+
+Feedback: the PCB reading works better than the Factorio one (nets ↔ registers,
+blocks ↔ ICs); drop the visible grid and the lids; zooming was slow.
+
+* **Traces instead of painted cells.** Nets are drawn as traces through the
+  centres of an invisible snap grid (the netlist model and compiler are
+  unchanged). Traces are Manhattan; there are no diagonals in this prototype.
+* **Route tool (W)**, PCB-style. Click a pin, a trace or empty board to start.
+  The trace follows the cursor as an L, and `/` flips the corner. Click to fix
+  a corner. Finishing on a pin or another trace connects to it and ends the
+  route. Esc or Enter ends it. A trace may not cross another net or run over a
+  pin on the same layer; the blocked part of the preview turns red. **Tab**
+  drops a via and continues on the other layer.
+* **Tracks.** With Select, clicking a trace picks the *track*: the chain of
+  cells between junctions, pins and vias. Delete removes the track (the net
+  splits if it has to); Shift+Delete removes the whole net.
+* **No lids.** Every composite IC always shows its own board. Below 4 px per
+  inner unit it's drawn as a one-colour sketch (per-net colours can't be seen at
+  that size). Above that the traces carry their value colours.
+* **Widths are capped in pixels.** A trace is about 1/3 of a board unit wide,
+  but never more than about 10 px on screen. Zoomed deep into an IC, the outer
+  board's traces stay thin lines instead of swamping the view.
+* **Performance.** Trace geometry is cached as one `Path2D` per net per layer,
+  in board units, and shared by every instance of a definition. A frame costs
+  roughly one stroke per visible net. Measured in headless Firefox on a Pi 5:
+  5–12 ms per frame from overview to three levels deep (was 8–17 ms).
+
+## Revision: flip-flops are the registers; style lab
+
+Making every net a register made every IC a pipeline stage. That spread
+feedback loops over several ticks and forced pipeline balancing everywhere. We
+went back to the simpler design:
+
+* **Logic ICs settle within the tick** (Add, Multiply, Greater-than, Switch), in
+  dependency order, like gates on a real board.
+* **The Delay is a flip-flop.** The net it drives is a register: it changes only
+  at the clock edge, and it is the only state there is. Every feedback loop
+  needs one; a loop without one is an error, and its ICs are outlined in red.
+* The critical path (the longest chain of logic between flip-flops) is reported
+  again.
+* The library loops now hold one flip-flop each: the Phasor (exact frequency,
+  no 3-tick staircase), Decay and OnePole. The synth went from 36 registers to 5.
+
+**Style lab** (the Style menu, `styles.html`, or URL parameters
+`ops`/`branch`/`dir`/`reg`):
+
+| Dimension | Options |
+|---|---|
+| Operations | IC packages · signal-flow symbols (⊕ ⊗, comparator, mux, flip-flop) · special vias |
+| Branch points | nothing · solder dot · copy via (spoke per branch, incoming spoke white) |
+| Direction | nothing · chevrons · flowing dashes · taper (thick at the driver) |
+| Registers | plain · copper pour (a region around the register net) · double outline |
+
+Direction comes from a breadth-first walk of each net from the pin that drives
+it, which orients every trace segment.

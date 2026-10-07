@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Clockwork — a transparent dataflow synthesizer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="top">
+    <div class="brand">⚙ Clockwork</div>
+    <button id="btn-audio" title="Start or stop the 48 kHz audio clock">▶ Start audio</button>
+    <div class="group clock">
+      <span class="dim">Clock:</span>
+      <label title="Run the design at the audio sample rate"><input type="radio" name="mode" value="audio"> audio <b id="fs"></b></label>
+      <label title="Run the design slowly on the main thread, so you can watch every value change"><input type="radio" name="mode" value="slow"> slow</label>
+      <span id="slow-controls">
+        <input type="range" id="slow-rate" min="0" max="1" step="0.001" title="Slow clock rate">
+        <span id="slow-rate-label" class="mono"></span>
+        <button id="btn-pause" title="Pause / run the slow clock">Pause</button>
+      </span>
+      <button id="btn-step" title="Advance exactly one tick (Space)">Step</button>
+      <button id="btn-reset" title="Clear every register to 0 (hardware reset)">Reset</button>
+      <span id="ticks" class="mono">tick 0</span>
+    </div>
+    <div class="spacer"></div>
+    <select id="examples" title="Load an example patch"></select>
+    <button id="btn-code" title="Show the program the patch compiles to">Code</button>
+    <button id="btn-export" title="Download the project as JSON">Export</button>
+    <button id="btn-import" title="Load a project or library JSON file">Import</button>
+    <button id="btn-help" title="How this works">?</button>
+    <a href="index.html" style="color:#5ec8e5" title="The spatial prototype: registers as regions on a grid">Grid prototype →</a>
+  </header>
+
+  <div id="main">
+    <aside id="palette"></aside>
+    <section id="center">
+      <div id="crumbs"></div>
+      <div id="banner"></div>
+      <svg id="canvas"></svg>
+      <div id="toast"></div>
+    </section>
+    <aside id="inspector"></aside>
+  </div>
+
+  <dialog id="code-dlg">
+    <h2>Compiled program</h2>
+    <p class="dim small">This is exactly what runs on every audio block. Each wire is a variable <code>nK</code>; each unit delay is a variable that keeps its value between ticks. Constants come from <code>p[]</code> so turning a knob never recompiles.</p>
+    <pre class="code"></pre>
+    <button class="close">Close</button>
+  </dialog>
+
+  <dialog id="help-dlg">
+    <h2>How Clockwork works</h2>
+    <p><b>One clock.</b> 48 000 times per second, every block computes exactly once. Each wire carries one number per tick.</p>
+    <p><b>Seven atoms.</b> Constant, Copy, Add, Multiply, Unit delay, Switch, Greater-than. Everything else — oscillators, sequencers, envelopes, filters — is built from them. Open any library block to see how.</p>
+    <p><b>Unit delay = register.</b> It outputs what its input was on the previous tick. Any feedback loop must pass through one; a loop without a delay is a <i>combinational loop</i> and is rejected, just as in FPGA design.</p>
+    <p><b>Explicit fan-out.</b> An output drives exactly one input. Use Copy to send a signal to two places.</p>
+    <p><b>Clock enables.</b> To run something slower than the clock (a sequencer step, a sample-and-hold), put a Switch in front of a register so it only updates when an "enable" pulse is 1. See <i>Sample&amp;Hold</i>, <i>Counter4</i>, <i>Seq4</i>.</p>
+    <p><b>Control panels.</b> Inside a composite, select a Constant and tick "Show as a control". It becomes a knob, toggle or button on every instance's face.</p>
+    <h3>Editing</h3>
+    <ul>
+      <li>Click or drag blocks from the left palette. Drag from an output port (right side) to an input port (left side) to wire.</li>
+      <li>Drag a wire off an input to move or remove it. Click a wire and press Delete to remove it.</li>
+      <li>Shift-click or shift-drag to select several blocks; <kbd>Ctrl+G</kbd> groups them into a new composite block.</li>
+      <li>Double-click a composite to open it (<kbd>Esc</kbd> goes back up). Double-click a constant or knob to type a value.</li>
+      <li>Drag the background to pan, scroll to zoom, <kbd>F</kbd> to fit. <kbd>Ctrl+D</kbd> duplicates.</li>
+      <li>Slow clock: watch values tick; <kbd>Space</kbd> or Step advances one tick.</li>
+    </ul>
+    <p class="dim small">Your project autosaves in this browser. Use Export/Import to move it elsewhere.</p>
+    <button class="close">Close</button>
+  </dialog>
+
+  <input type="file" id="file-input" accept=".json,application/json" hidden>
+
+  <script src="js/blocks.js"></script>
+  <script src="js/compiler.js"></script>
+  <script src="js/library.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/editor.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
