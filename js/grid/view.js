@@ -487,7 +487,9 @@
       ctx.lineWidth = lw(outline ? 0.12 : 0.08, outline ? 3 : 2);
       ctx.fillStyle = via ? colorOf(vout) : '#14161b';
       ctx.strokeStyle = ring;
-      const glyph = via ? '#0b0c10' : '#e8ebf2';
+      // on a via the glyph sits on the output colour: light on the dark end of the colormap, dark on the bright end
+      const bright = vout !== undefined && Number.isFinite(vout) && (Math.abs(vout) <= 1 ? Math.abs(vout) * 0.5 : 0.5 + 0.5 * Math.min(1, Math.log10(Math.abs(vout)) / 4)) > 0.55;
+      const glyph = via && bright ? '#0b0c10' : '#e8ebf2';
       ctx.beginPath();
       if (b.type === 'switch') {           // multiplexer: a trapezoid, "1" on top, "0" below
         const h0 = via ? 0.45 : 1.1, h1 = via ? 0.25 : 0.5, w0 = via ? 0.4 : 0.6;
