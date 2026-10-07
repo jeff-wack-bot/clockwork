@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Clockwork Grid — registers as regions</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="css/grid.css">
+</head>
+<body>
+  <header id="top">
+    <div class="brand">⚙ Clockwork <span>Grid</span></div>
+    <button id="btn-audio" title="Switch the DAC (speaker output) on or off">▶ Start audio</button>
+    <div class="group clock">
+      <span class="dim">Clock</span>
+      <input type="range" id="rate" min="0" max="1" step="0.001" title="Clock rate: far right is real time (one tick per audio sample)">
+      <span id="rate-label" class="mono"></span>
+      <button id="btn-run" title="Pause or run the clock">Pause</button>
+      <button id="btn-step" title="Advance exactly one tick (.)">Step</button>
+      <button id="btn-reset" title="Clear every written register to 0">Reset</button>
+      <span id="ticks" class="mono">tick 0</span>
+    </div>
+    <div class="group tools">
+      <button data-tool="select" title="Select, move blocks, turn knobs (V)">Select</button>
+      <button data-tool="draw" title="Paint regions; Tab switches layer and drops a via (W)">Draw</button>
+      <button data-tool="erase" title="Erase cells on the active layer; Shift = both layers; right-drag erases in any tool (E)">Erase</button>
+      <button data-tool="knob" title="Add or remove a handle on an unwritten region (K)">Knob</button>
+      <button id="btn-layer" title="Active layer (Tab)">Layer: top</button>
+    </div>
+    <div class="spacer"></div>
+    <select id="examples"></select>
+    <button id="btn-export">Export</button>
+    <button id="btn-import">Import</button>
+    <button id="btn-help">?</button>
+    <a class="link" href="index.html" title="The original patch editor">Patch editor</a>
+  </header>
+  <div id="main">
+    <aside id="palette"></aside>
+    <section id="center">
+      <div id="banner"></div>
+      <canvas id="grid"></canvas>
+      <div id="status" class="mono"></div>
+      <div id="toast"></div>
+    </section>
+    <aside id="inspector"></aside>
+  </div>
+
+  <dialog id="code-dlg">
+    <h2>Compiled program</h2>
+    <p class="dim small">Every block computes from the registers as they are now, then every register latches at once.</p>
+    <pre class="code"></pre>
+    <button class="close">Close</button>
+  </dialog>
+
+  <dialog id="help-dlg">
+    <h2>Clockwork Grid</h2>
+    <p><b>Regions are registers.</b> A region is a set of painted cells holding one number, and its colour shows the value. Blocks are chips: on every tick each chip reads the regions on its input pads and writes the region on its output pad, and all regions change at once.</p>
+    <p><b>Unwritten regions are constants.</b> Give one a handle with the knob tool and turn it. A written region can't have a handle.</p>
+    <p><b>Every block is a pipeline stage.</b> A feedback loop through k blocks takes k ticks to go round. The right-hand panel lists every loop's latency.</p>
+    <p><b>Crossings need the bottom layer.</b> Regions can't overlap each other, only pads. Press Tab while painting to drop a via and continue on the bottom layer, which passes under everything. Tab again to come back up.</p>
+    <p><b>Zoom is navigation.</b> Scroll into a composite block to see inside it. Once its cells are big enough you are editing inside it: the definition is shared, but each instance keeps its own knob values. Double-click a block to fly into it, Z or Esc to back out, H to see everything.</p>
+    <p><b>One clock.</b> The slider runs the design from 0.5 ticks/s up to real time (48 000 ticks/s, one per audio sample). With audio on, the speaker holds the DAC register between ticks, so slow clocks are clicks and real time is sound.</p>
+    <h3>Keys</h3>
+    <p>V select · W draw · E erase · K knob · Tab layer/via · R rotate · Delete · Space-drag or middle-drag pan · wheel zoom · . step</p>
+    <button class="close">Close</button>
+  </dialog>
+  <input type="file" id="file-input" accept=".json" hidden>
+
+  <script src="js/grid/model.js"></script>
+  <script src="js/grid/compiler.js"></script>
+  <script src="js/grid/library.js"></script>
+  <script src="js/grid/engine.js"></script>
+  <script src="js/grid/view.js"></script>
+  <script src="js/grid/app.js"></script>
+</body>
+</html>

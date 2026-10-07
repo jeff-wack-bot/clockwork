@@ -6,6 +6,13 @@ on **one global 48 kHz clock**, and nothing happens under the hood: you can see
 the compiled program, the live value on every wire, the "hardware" your design
 uses, and its critical path.
 
+There are two front-ends:
+
+* `index.html` is the **patch editor** (blocks and wires).
+* `grid.html` is the **grid prototype**: registers are painted regions, crossings use a second
+  layer, constants have handles instead of panels, zooming in is how you enter a block, and a
+  single slider sets the clock from 0.5 Hz up to real time. See [GRID-PLAN.md](GRID-PLAN.md).
+
 See [PLAN.md](PLAN.md) for the design, and for the decisions made where the
 brief left room for interpretation.
 
@@ -19,7 +26,7 @@ No build step and no dependencies. Either:
 Then press **▶ Start audio**. The default patch is a sequenced synth. To watch
 it tick instead, choose the **slow** clock and press **Step** (or Space).
 
-Tests (compiler + library modules): `node tests/test.js`
+Tests: `node tests/test.js` (patch editor) and `node tests/grid.test.js` (grid prototype)
 
 ## The atoms
 
@@ -77,3 +84,17 @@ js/editor.js      SVG patch editor
 js/app.js         palette, inspector, navigation, persistence
 tests/test.js     node tests
 ```
+
+## Grid prototype in two minutes
+
+1. Open `grid.html`. The sequenced synth is loaded and running at real time.
+   Press **▶ Start audio** to hear it.
+2. Drag the **Clock** slider left: the sound turns into steps, then clicks, and
+   you can watch each register change colour tick by tick.
+3. Scroll into **Seq4** until its insides are big. The four knobs are the
+   melody. Drag one up or down.
+4. Keep scrolling into the **VCO** and then its **Phasor**: the feedback loop
+   drops to the bottom layer (the darker, thinner track) through vias (the circles).
+5. Make something: pick **Add** from the palette and click to place it. Switch
+   to **Draw** (W) and paint from a pad. Press **Tab** mid-stroke to dive under
+   another region. Use **Knob** (K) on an unwritten region to give it a handle.
