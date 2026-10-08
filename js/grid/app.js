@@ -17,14 +17,14 @@
   // ---- visual style (the style lab) -----------------------------------------------
   const Q = new URLSearchParams(location.search);
   const EMBED = Q.get('embed') === '1';
-  const STYLE_KEY = 'clockwork.style';
+  const STYLE_KEY = 'clockwork.style.v2';  // v2: the defaults chosen from the style lab
   const STYLES = {
     ops: { label: 'Operations', options: { chip: 'IC packages', symbol: 'Signal-flow symbols', via: 'Special vias' } },
     branch: { label: 'Branch points (copy)', options: { none: 'Nothing', dot: 'Solder dot', copyvia: 'Copy via' } },
     dir: { label: 'Direction', options: { none: 'Nothing', arrows: 'Chevrons', flow: 'Flowing dashes', taper: 'Taper' } },
     reg: { label: 'Registers', options: { plain: 'Plain trace', pour: 'Copper pour (region)', double: 'Double outline' } },
   };
-  app.style = { ops: 'symbol', branch: 'dot', dir: 'none', reg: 'pour' };
+  app.style = { ops: 'via', branch: 'none', dir: 'taper', reg: 'plain' };
   try { if (!EMBED) Object.assign(app.style, JSON.parse(localStorage.getItem(STYLE_KEY) || '{}')); } catch (e) { /* keep defaults */ }
   for (const k in STYLES) if (Q.has(k) && STYLES[k].options[Q.get(k)]) app.style[k] = Q.get(k);
   app.netKind = (key) => { const r = app.running && app.running.netOf[key]; return r ? r.k : undefined; };

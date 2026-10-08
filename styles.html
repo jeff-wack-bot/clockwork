@@ -22,18 +22,17 @@
 <body>
   <header>
     <h1>⚙ Clockwork Board — style lab</h1>
-    <p>Every tile is the live board, zoomed into the <b>Phasor</b> inside the VCO (the oscillator's ramp: multiply, add, compare, subtract, switch, flip-flop). Each row varies one thing and keeps the rest fixed. The clock runs slowly (300 ticks/s), so you can see values move. <a href="index.html">Open the editor →</a></p>
+    <p>Every tile is the live board, zoomed into the <b>Phasor</b> inside the VCO (the oscillator's ramp: multiply, add, compare, subtract, switch, flip-flop). The chosen default is special vias, no branch marks, taper, plain registers; each row varies one of these and keeps the rest. The clock runs slowly (300 ticks/s), so you can see values move. <a href="index.html">Open the editor →</a></p>
   </header>
   <main id="rows"></main>
   <script>
-    const base = { ops: 'symbol', branch: 'dot', dir: 'none', reg: 'pour' };
+    const base = { ops: 'via', branch: 'none', dir: 'taper', reg: 'plain' };  // the chosen default look
     const rows = [
       ['Operations', 'How an atomic operation looks where its traces meet.', [
         [{ ops: 'chip' }, 'A · IC packages', 'chips with pins, as now'],
         [{ ops: 'symbol' }, 'B · Signal-flow symbols', '⊕ ⊗, comparator triangle, mux, flip-flop'],
         [{ ops: 'via' }, 'C · Special vias', 'traces run into a small glyph via coloured by its output'],
-        [{ ops: 'via', branch: 'copyvia' }, 'C + copy vias', 'operations and copies both drawn as vias'],
-      ]],
+              ]],
       ['Branch points (copy)', 'Where one value fans out to several readers.', [
         [{ branch: 'none' }, 'A · Nothing', 'a plain T in the trace'],
         [{ branch: 'dot' }, 'B · Solder dot', 'the schematic convention: a dot means "connected"'],

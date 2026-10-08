@@ -133,5 +133,8 @@ went back to the simpler design:
 | Direction | nothing · chevrons · flowing dashes · taper (thick at the driver) |
 | Registers | plain · copper pour (a region around the register net) · double outline |
 
+**Chosen default (2026-10-08):** special vias, no branch marks, taper, plain
+registers. The other options stay available in the Style menu and gallery.
+
 Direction comes from a breadth-first walk of each net from the pin that drives
 it, which orients every trace segment.
