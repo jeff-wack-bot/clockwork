@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Clockwork Board — ICs, traces and flip-flops</title>
+  <title>Sample Factory — ICs, traces, flip-flops and sample stacks</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="css/grid.css">
 </head>
 <body>
   <header id="top">
-    <div class="brand">⚙ Clockwork <span>Board</span></div>
+    <div class="brand">▤ Sample <span>Factory</span></div>
     <button id="btn-audio" title="Switch the DAC (speaker output) on or off">▶ Start audio</button>
     <div class="group clock">
       <span class="dim">Clock</span>
@@ -54,9 +54,10 @@
   </dialog>
 
   <dialog id="help-dlg">
-    <h2>Clockwork Board</h2>
+    <h2>Sample Factory</h2>
     <p><b>ICs and nets.</b> Blocks are ICs with pins. A net is a set of connected traces carrying one number, shown as the trace colour. Logic ICs (add, multiply, compare, switch) settle within the tick, like gates on a real board.</p>
     <p><b>Flip-flops are the registers.</b> The Delay IC is a flip-flop: the net it drives is a register that only changes at the clock edge. Every feedback loop needs one; a loop without one is an error. The right-hand panel shows the critical path: the longest chain of logic between flip-flops.</p>
+    <p><b>Sample stacks.</b> A Sample block is a stack of every sample in a WAV file. Each tick it emits the next one, on the same clock edge where the flip-flops latch, so at real time it plays the song and at a slow clock you can step through it one sample at a time. Place one from the palette (Sources) or drop a WAV on the board; double-click the block to load a different file. Reset rewinds it. Songs stay in this browser and are not part of exported files.</p>
     <p><b>Unwritten nets are constants.</b> Route a short trace from an input pin and give it a handle with the knob tool. A net that an IC drives can't have a handle.</p>
     <p><b>Routing.</b> With Route (W): click a pin, a trace or empty board to start. Click to place corners and press / to flip the corner. Finish on a pin or a trace to connect. A trace can't cross another net on the same layer: press Tab to drop a via and continue on the bottom layer, which passes under everything. Click a trace with Select to pick the track between junctions; Delete removes it, Shift+Delete removes the whole net.</p>
     <p><b>Style lab.</b> The Style menu changes how operations, branch points, direction and registers are drawn. <a href="styles.html">Compare them side by side.</a></p>
@@ -67,11 +68,13 @@
     <button class="close">Close</button>
   </dialog>
   <input type="file" id="file-input" accept=".json" hidden>
+  <input type="file" id="wav-input" accept=".wav,audio/wav,audio/x-wav,audio/*" hidden>
 
   <script src="js/grid/model.js"></script>
   <script src="js/grid/compiler.js"></script>
   <script src="js/grid/library.js"></script>
   <script src="js/grid/engine.js"></script>
+  <script src="js/grid/samples.js"></script>
   <script src="js/grid/view.js"></script>
   <script src="js/grid/app.js"></script>
 </body>

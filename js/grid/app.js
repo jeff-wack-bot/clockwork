@@ -1,10 +1,10 @@
-// Grid prototype application: tools, painting, knobs, inspector, persistence.
+// Sample Factory application: tools, routing, knobs, sample stacks, inspector, persistence.
 (function () {
   'use strict';
   const G = window.GW;
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const STORE = 'clockwork.grid.v1';
+  const STORE = 'samplefactory.board.v1', OLD_STORE = 'clockwork.grid.v1';   // a Clockwork Board project still opens
   const RATE_MIN = 0.5, RATE_MAX = G.FS;
 
   const app = {
@@ -17,7 +17,7 @@
   // ---- visual style (the style lab) -----------------------------------------------
   const Q = new URLSearchParams(location.search);
   const EMBED = Q.get('embed') === '1';
-  const STYLE_KEY = 'clockwork.style.v2';  // v2: the defaults chosen from the style lab
+  const STYLE_KEY = 'samplefactory.style.v1';
   const STYLES = {
     ops: { label: 'Operations', options: { chip: 'IC packages', symbol: 'Signal-flow symbols', via: 'Special vias' } },
     branch: { label: 'Branch points (copy)', options: { none: 'Nothing', dot: 'Solder dot', copyvia: 'Copy via' } },
@@ -62,9 +62,49 @@
   function recompile() {
     const c = GW.compile(app.project);
     app.compiled = c;
-    if (c.ok) { app.running = c; app.host.load(c, scopeWins(c)); }
+    if (c.ok) { app.running = c; app.host.load(c, scopeWins(c)); fetchSamples(c); }
     updateBanner();
   }
+
+  // ---- sample stacks ------------------------------------------------------------
+  // The project stores only a sample's id; the samples live in IndexedDB (or, for
+  // the built-in song, are synthesized). Fetch whatever the program needs.
+  app.missing = new Set();
+  const fetching = new Set();
+  function fetchSamples(c) {
+    for (const pl of c.players) {
+      const id = pl.sample;
+      if (!id || app.host.lib.has(id) || fetching.has(id)) continue;
+      fetching.add(id);
+      GW.Samples.load(id).then((e) => {
+        fetching.delete(id);
+        if (e) { app.missing.delete(id); app.host.addSample(id, e.data); }
+        else app.missing.add(id);
+        app.view.dirty = true; updateBanner(); renderInspector();
+      });
+    }
+  }
+  const wavInput = $('#wav-input');
+  let wavTarget = null;   // {F, b}: the block a chosen file goes into
+  function pickWav(F, b) { wavTarget = { F, b }; wavInput.click(); }
+  wavInput.addEventListener('change', () => {
+    const f = wavInput.files[0]; wavInput.value = '';
+    if (f && wavTarget) loadWavInto(wavTarget.F, wavTarget.b, f);
+  });
+  async function loadWavInto(F, b, file) {
+    toast(`Decoding ${file.name}…`, 20000);
+    let e;
+    try { e = await GW.Samples.decode(file); } catch (err) { toast(`Could not decode ${file.name}: ${err && err.message || err}`); return; }
+    app.host.addSample(e.id, e.data);
+    app.missing.delete(e.id);
+    Object.assign(b, { sample: e.id, name: e.name });
+    app.sel = { kind: 'block', path: F.path, id: b.id, F };
+    app.changed(); renderInspector();
+    const secs = e.data.length / G.FS;
+    toast(`${e.name}: ${e.data.length.toLocaleString('en-US')} samples (${fmtTime(secs)}), one per tick.` +
+      (e.stored ? '' : ' It could not be saved in this browser, so you will need to load it again after a reload.'), 6000);
+  }
+  const fmtTime = (secs) => `${Math.floor(secs / 60)}:${(secs % 60).toFixed(1).padStart(4, '0')}`;
   function scopeWins(c) {
     return c.scopePaths.map((path) => { const b = blockAtPath(path); return (b && b.window) || 512; });
   }
@@ -124,6 +164,22 @@
   const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  // Drop a WAV on the board: onto a Sample block to replace its song, or anywhere else for a new block.
+  canvas.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  canvas.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (!f) return;
+    const p = pos(e), h = app.view.locate(p.x, p.y);
+    if (!h) return;
+    let b = h.occ && h.occ.block && h.occ.block.type === 'sample' ? h.occ.block : null;
+    if (!b) {
+      const ghost = Object.assign({ type: 'sample', rot: 0, loop: true }, { x: h.x - 5, y: h.y - 1 });
+      if (!G.canPlace(h.F.sheet, app.project.defs, ghost)) { toast('No room for a Sample block there (10×3 cells).'); return; }
+      b = G.addBlock(h.F.sheet, app.project.defs, ghost);
+    }
+    loadWavInto(h.F, b, f);
+  });
   canvas.addEventListener('pointerdown', (e) => {
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
     const p = pos(e), h = app.view.locate(p.x, p.y);
@@ -205,6 +261,7 @@
     if (app.tool === 'route') return;
     const b = h.occ && h.occ.block;
     if (b && b.type === 'comp') { zoomToBlock(h.F, b); return; }
+    if (b && b.type === 'sample') { pickWav(h.F, b); return; }
     const krid = knobAt(h);
     if (krid && app.knobState(h.F.path + krid) === 'ok') {
       const kb = h.F.sheet.regions[krid].knob;
@@ -354,8 +411,10 @@
       toast(`"${b.def}" can't go inside itself.`); return;
     }
     if (!G.canPlace(h.F.sheet, app.project.defs, b)) { toast('No room: an IC can only sit where traces touch its pins.'); return; }
-    const nb = G.addBlock(h.F.sheet, app.project.defs, { type: b.type, def: b.def, x: b.x, y: b.y, rot: b.rot, window: b.type === 'scope' ? 512 : undefined });
+    const nb = G.addBlock(h.F.sheet, app.project.defs, { type: b.type, def: b.def, x: b.x, y: b.y, rot: b.rot,
+      window: b.type === 'scope' ? 512 : undefined, loop: b.type === 'sample' ? true : undefined });
     app.sel = { kind: 'block', path: h.F.path, id: nb.id, F: h.F };
+    if (nb.type === 'sample') pickWav(h.F, nb);
     if (!keep) app.placing = null;
     updatePalette(); app.changed();
   }
@@ -452,6 +511,8 @@
     };
     let s = '<h3>Atoms</h3>';
     for (const t of G.ATOM_ORDER) s += item('atom', t, G.ATOMS[t].sym, G.ATOMS[t].title, G.ATOMS[t].eq + '\n' + G.DOCS[t]);
+    s += '<h3>Sources</h3>';
+    for (const t of G.SOURCE_ORDER) s += item('atom', t, G.SOURCES[t].sym, G.SOURCES[t].title, G.SOURCES[t].eq + '\n' + G.DOCS[t]);
     s += '<h3>Outputs</h3>';
     for (const t of G.SINK_ORDER) s += item('atom', t, G.SINKS[t].sym, G.SINKS[t].title, G.DOCS[t]);
     s += '<h3>Library</h3>';
@@ -521,6 +582,7 @@
       h0 += `<div class="eq">${esc(t.eq)}</div><p>${esc(G.DOCS[b.type])}</p>`;
       const code = app.compiled && app.compiled.nodeCode[F.path + b.id];
       if (code) h0 += `<h3>Compiled as</h3><pre class="code small">${esc(code)}</pre>`;
+      if (b.type === 'sample') h0 += sampleHtml(F, b);
       if (b.type === 'scope') {
         h0 += `<label class="field"><span>Ticks shown</span><select data-prop="window">${[16, 64, 256, 512, 2048, 4800, 16384, 48000]
           .map((n) => `<option ${b.window === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
@@ -528,6 +590,25 @@
       h0 += '<p class="dim small">R rotates.</p>';
       return h0 + '<p><button data-act="delete" class="danger">Delete</button></p>';
     }
+  }
+
+  function sampleHtml(F, b) {
+    const e = b.sample && GW.Samples.get(b.sample);
+    let h = '<h3>Song</h3>';
+    if (!b.sample) h += '<p>No WAV loaded yet; it emits 0.</p>';
+    else if (e) {
+      const pl = app.running && app.running.players.find((x) => x.path === F.path + b.id);
+      const at = pl && app.snap && app.snap.v ? app.snap.v[pl.v] || 0 : 0;
+      h += `<p><b>${esc(e.name)}</b></p><table class="res">
+        <tr><td>Samples in the stack</td><td>${e.data.length.toLocaleString('en-US')}</td></tr>
+        <tr><td>Length at real time</td><td>${fmtTime(e.data.length / G.FS)}</td></tr>
+        <tr><td>Read position</td><td data-live="pos">${Math.round(at).toLocaleString('en-US')}</td></tr></table>`;
+    } else if (app.missing.has(b.sample)) h += `<p class="err small">"${esc(b.name || b.sample)}" is not stored in this browser. Load the WAV again.</p>`;
+    else h += '<p class="dim">Loading…</p>';
+    h += `<label class="field"><span>At the end</span><select data-prop="loop"><option value="1" ${b.loop !== false ? 'selected' : ''}>loop</option><option value="0" ${b.loop === false ? 'selected' : ''}>stop (emit 0)</option></select></label>`;
+    h += '<p><button data-act="wav">Load WAV…</button></p>';
+    h += '<p class="dim small">The file is mixed to mono and resampled to 48 kHz, so at real time one tick is one sample. Its read position is a counter that moves on at every clock edge, with the flip-flops; Reset rewinds it. Songs are kept in this browser (IndexedDB), not in exported files.</p>';
+    return h;
   }
 
   function regionHtml(F, rid) {
@@ -567,8 +648,9 @@
     if (c.errors.length) h += '<h3 class="err">Errors</h3><ul class="err">' + c.errors.map((e) => `<li>${esc(e.msg)}</li>`).join('') + '</ul><p class="dim small">The last error-free design keeps running.</p>';
     const r = c.resources;
     h += `<table class="res">
-      <tr><td>Registers (flip-flop outputs)</td><td>${c.nState}</td></tr>
-      <tr><td>Wires (settle within a tick)</td><td>${c.nNets - c.nState}</td></tr>
+      <tr><td>Registers (flip-flop outputs)</td><td>${c.nRegs}</td></tr>
+      <tr><td>Wires (settle within a tick)</td><td>${c.nNets - c.nRegs}</td></tr>
+      <tr><td>Sample stacks</td><td>${c.players.length}</td></tr>
       <tr><td>Constants</td><td>${c.params.length}</td></tr>
       <tr><td>Adders</td><td>${r.adder}</td></tr><tr><td>Multipliers</td><td>${r.multiplier}</td></tr>
       <tr><td>Comparators</td><td>${r.comparator}</td></tr><tr><td>Switches</td><td>${r.mux}</td></tr>
@@ -593,6 +675,7 @@
     if (s.kind === 'block') {
       const b = s.F.sheet.blocks.find((x) => x.id === s.id), def = b && app.project.defs[b.def];
       if (act === 'zoom') zoomToBlock(s.F, b);
+      if (act === 'wav') pickWav(s.F, b);
       if (def && (act === 'addin' || act === 'addout')) {
         const dir = act === 'addin' ? 'in' : 'out';
         const used = new Set(def.ports.filter((p) => p.dir === dir).map((p) => p.row));
@@ -625,6 +708,7 @@
     const b = s.F.sheet.blocks.find((x) => x.id === s.id);
     if (!b) return;
     if (prop === 'window') { b.window = num; app.changed(); return; }
+    if (prop === 'loop') { b.loop = v === '1'; app.changed(); return; }
     const def = app.project.defs[b.def];
     if (prop === 'def.description') def.description = v;
     else if (prop.startsWith('port.')) {
@@ -655,6 +739,7 @@
   function updateBanner() {
     const m = [];
     if (app.compiled && !app.compiled.ok) m.push(['err', '⚠ ' + app.compiled.errors[0].msg]);
+    if (app.missing.size) m.push(['err', `${app.missing.size} sample stack(s) not stored in this browser: select the Sample block and load the WAV again.`]);
     if (app.snap && app.snap.bad) m.push(['err', 'The DAC saw NaN or ∞ — press Reset.']);
     $('#banner').innerHTML = m.map(([k, s]) => `<div class="${k}">${esc(s)}</div>`).join('');
   }
@@ -723,7 +808,8 @@
   $('#btn-export').addEventListener('click', () => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(app.project)], { type: 'application/json' }));
-    a.download = 'clockwork-grid.json'; a.click();
+    a.download = 'sample-factory.json'; a.click();
+    if (app.running && app.running.players.some((pl) => pl.sample && pl.sample !== GW.Samples.DEMO_ID)) toast('Exported the board. WAV files are not included: load them again after importing.');
   });
   $('#btn-import').addEventListener('click', () => $('#file-input').click());
   $('#file-input').addEventListener('change', async (e) => {
@@ -731,7 +817,7 @@
     if (!f) return;
     try {
       const p = JSON.parse(await f.text());
-      if (!p.root || !p.defs) throw new Error('not a Clockwork Grid file');
+      if (!p.root || !p.defs) throw new Error('not a Sample Factory file');
       if (confirm('Replace the current project?')) loadProject(p);
     } catch (err) { toast('Import failed: ' + err.message); }
   });
@@ -743,6 +829,11 @@
     const wasBad = app.snap && app.snap.bad;
     app.snap = snap;
     $('#ticks').textContent = 'tick ' + snap.ticks.toLocaleString('en-US');
+    const live = document.querySelector('#inspector [data-live="pos"]'), s = app.sel;
+    if (live && s && app.running) {
+      const pl = app.running.players.find((x) => x.path === s.path + s.id);
+      if (pl && snap.v) live.textContent = Math.round(snap.v[pl.v] || 0).toLocaleString('en-US');
+    }
     app.view.dirty = true;
     if (!!snap.bad !== !!wasBad) updateBanner();
   }, (msg) => { if (msg) toast(msg); updateClock(); });
@@ -751,7 +842,7 @@
 
   if (EMBED) document.body.classList.add('embed');
   let saved = null;
-  try { saved = EMBED ? null : JSON.parse(localStorage.getItem(STORE)); } catch (e) { saved = null; }
+  try { saved = EMBED ? null : JSON.parse(localStorage.getItem(STORE) || localStorage.getItem(OLD_STORE)); } catch (e) { saved = null; }
   if (Q.has('example')) loadExample(Number(Q.get('example')) || 0);
   else if (saved && saved.root && saved.version === 2) { loadProject(saved); updateClock(); }
   else loadExample(2);

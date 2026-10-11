@@ -552,11 +552,17 @@
       }
       const t = G.info(b.type);
       if (G.ATOMS[b.type] && app.style.ops !== 'chip') { this.drawOp(F, b, fp, px, outline); this.screen(); return; }
-      ctx.fillStyle = b.type === 'delay' ? '#1f2d40' : G.SINKS[b.type] ? '#2e2333' : '#242833';
+      if (b.type === 'sample') {
+        // a stack: a few cards peeking out behind the one on top
+        ctx.lineWidth = Math.min(0.05, 1.5 / px); ctx.strokeStyle = '#3d5a4a'; ctx.fillStyle = '#16211b';
+        for (const o of [0.36, 0.24]) { ctx.fillRect(b.x + 0.12 + o, b.y + 0.12 - o * 0.6, fp.w - 0.36 - o, fp.h - 0.24); ctx.strokeRect(b.x + 0.12 + o, b.y + 0.12 - o * 0.6, fp.w - 0.36 - o, fp.h - 0.24); }
+      }
+      ctx.fillStyle = b.type === 'delay' ? '#1f2d40' : b.type === 'sample' ? '#1a2620' : G.SINKS[b.type] ? '#2e2333' : '#242833';
       ctx.fillRect(b.x + 0.12, b.y + 0.12, fp.w - 0.24, fp.h - 0.24);
       ctx.lineWidth = Math.min(outline ? 0.1 : 0.05, (outline ? 3 : 1.5) / px); ctx.strokeStyle = outline || '#59607a';
       ctx.strokeRect(b.x + 0.12, b.y + 0.12, fp.w - 0.24, fp.h - 0.24);
       if (b.type === 'scope') { this.screen(); this.drawScope(F, b, a, w, h, px); return; }
+      if (b.type === 'sample') { this.screen(); this.drawSample(F, b, a, w, h, px); return; }
       this.screen();
       if (px >= 5) {
         ctx.fillStyle = b.type === 'delay' ? '#5ec8e5' : '#f0a640';
@@ -595,6 +601,44 @@
         ctx.fillStyle = st === 'ok' ? '#ffd28a' : '#8a90a0'; ctx.font = `${Math.min(13, px * 0.32)}px system-ui`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
         ctx.fillText(k.label + (st === 'overridden' ? ' (set outside)' : st === 'written' ? ' (written)' : ''), cx, p.y - 1);
+      }
+    }
+
+    // The whole song at a glance; the part already emitted is lit, the playhead is the read position.
+    drawSample(F, b, a, w, h, px) {
+      const ctx = this.ctx, app = this.app;
+      const e = b.sample && GW.Samples && GW.Samples.get(b.sample);
+      const x0 = a.x + px * 0.4, x1 = a.x + w - px * 1.1, y0 = a.y + px * 0.4, y1 = a.y + h - px * 0.4;
+      ctx.fillStyle = '#0d1310'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      if (px < 3) return;
+      const pl = app.running && app.running.players.find((x) => x.path === F.path + b.id);
+      const at = pl && app.snap && app.snap.v ? app.snap.v[pl.v] || 0 : 0;
+      const label = (txt, color) => {
+        if (px < 8) return;
+        ctx.fillStyle = color; ctx.font = `${Math.min(12, px * 0.42)}px system-ui`;
+        ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(txt, x0 + 4, y0 + 3);
+      };
+      if (!e) {
+        label(!b.sample ? 'drop a WAV here, or double-click' : app.missing && app.missing.has(b.sample) ? 'WAV not stored here: load it again' : 'loading…', '#6d8a75');
+        return;
+      }
+      const pk = e.peaks, n = pk.length / 2, mid = (y0 + y1) / 2, amp = (y1 - y0) / 2 - 2;
+      const frac = e.data.length ? at / e.data.length : 0, xh = x0 + (x1 - x0) * frac;
+      const cols = Math.max(1, Math.floor(x1 - x0));
+      for (let c = 0; c < cols; c++) {
+        const lo0 = Math.floor(c / cols * n), hi0 = Math.max(lo0 + 1, Math.floor((c + 1) / cols * n));
+        let lo = Infinity, hi = -Infinity;
+        for (let j = lo0; j < hi0; j++) { if (pk[2 * j] < lo) lo = pk[2 * j]; if (pk[2 * j + 1] > hi) hi = pk[2 * j + 1]; }
+        ctx.fillStyle = x0 + c < xh ? '#6fdc8c' : '#2f5a3e';
+        ctx.fillRect(x0 + c, mid - Math.max(0.5, hi * amp), 1, Math.max(1, (hi - lo) * amp));
+      }
+      ctx.strokeStyle = '#f0a640'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(xh, y0); ctx.lineTo(xh, y1); ctx.stroke();
+      label(e.name, '#bfe8cb');
+      if (px >= 12) {
+        ctx.fillStyle = '#6d8a75'; ctx.font = `${Math.min(11, px * 0.36)}px ui-monospace, monospace`;
+        ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+        ctx.fillText(`${Math.round(at).toLocaleString('en-US')} / ${e.data.length.toLocaleString('en-US')}${b.loop === false ? '' : ' ↻'}`, x1 - 4, y1 - 2);
       }
     }
 

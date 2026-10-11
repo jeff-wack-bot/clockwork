@@ -138,3 +138,36 @@ registers. The other options stay available in the Style menu and gallery.
 
 Direction comes from a breadth-first walk of each net from the pin that drives
 it, which orients every trace segment.
+
+## Revision 4: Sample Factory (2026-10-11)
+
+The app is renamed **Sample Factory**, and it gains a **Sample** source block: a
+stack of a whole song's samples, emitted one per tick.
+
+Decisions:
+
+* **Same clock.** The block holds a read-position counter that advances at the
+  clock edge along with the flip-flops. During a tick its output pin carries
+  `song[position]`, so it behaves like a flip-flop's output (a value available at
+  the start of the tick) and never forms part of a combinational loop. It has no inputs.
+* **Mono at 48 kHz.** Files are decoded and resampled by the browser
+  (`OfflineAudioContext.decodeAudioData` at 48 kHz) and channels are averaged.
+  One tick is then one sample at real time, which keeps the
+  "the slider is the clock" model intact.
+* **Storage.** A song is far too big for localStorage (a 3-minute song is about
+  35 MB as float32), so it lives in IndexedDB under a content hash. The project
+  stores only the hash and a display name. A missing song is reported in the
+  banner and the block, and the block emits 0 until it is loaded again.
+* **Codegen.** The counter is stored with the registers (`regNames` entry
+  `path#pos`), so it survives recompiles and the audio-thread handoff, and Reset
+  rewinds it. The song is passed to the program as an extra argument `w[]`.
+  The generated code does not depend on the song, so loading a new file never
+  recompiles.
+* **Audio thread.** Each song is posted to the worklet once, keyed by its id.
+* **End of song.** It loops by default; "stop" holds the counter at the end and
+  emits 0.
+* **Built-in song.** Example 4's song is synthesized at load (eight bars of
+  plucked chords and a kick), so the demo needs no file.
+* The repository and Pages URL keep the name `clockwork`. The previous version
+  is tagged `clockwork-board-v1`.
+

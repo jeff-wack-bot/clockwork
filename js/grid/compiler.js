@@ -1,6 +1,7 @@
 // Board compiler. Nets are wires carrying this tick's value; logic ICs (Add,
 // Multiply, Greater-than, Switch) settle within the tick; the Delay is a
-// flip-flop: the net it writes is a register, the only state there is.
+// flip-flop: the net it writes is a register. A Sample holds a whole song and a
+// counter that advances on the same clock edge as the flip-flops.
 (function (root) {
   'use strict';
   const G = (typeof module === 'object' && module.exports) ? require('./model.js') : root.GW;
@@ -13,6 +14,7 @@
     const regions = new Map();          // key -> {path, sheet, rid, depth, region}
     const atoms = [];                   // {path, block, ins:[key|null], outs:[key|null], chain}
     const sinks = [];
+    const sources = [];                 // Sample players: {path, block, outs, chain}
 
     function visit(sheet, path, depth, chain) {
       for (const rid in sheet.regions) {
@@ -26,6 +28,7 @@
         const ins = fp.pads.filter((p) => p.dir === 'in').map((p) => netAt(p.x, p.y));
         const outs = fp.pads.filter((p) => p.dir === 'out').map((p) => netAt(p.x, p.y));
         if (G.ATOMS[b.type]) atoms.push({ path: path + b.id, block: b, ins, outs, chain });
+        else if (G.SOURCES[b.type]) sources.push({ path: path + b.id, block: b, ins, outs, chain });
         else if (G.SINKS[b.type]) sinks.push({ path: path + b.id, block: b, ins, chain });
         else if (b.type === 'comp') {
           const def = project.defs[b.def];
@@ -57,6 +60,10 @@
       a.ins.forEach((k, i) => {
         if (!k) warnings.push({ msg: `${G.ATOMS[a.block.type].title}: input "${G.ATOMS[a.block.type].ins[i][2] || 'x'}" is not connected (reads 0)`, path: a.path });
       });
+    }
+    for (const src of sources) {
+      src.outs.forEach((k) => { if (k) netOfKey(k).writers.push(src); });
+      if (!src.block.sample) warnings.push({ msg: 'Sample has no WAV loaded (emits 0)', path: src.path });
     }
     for (const s of sinks) if (s.block.type === 'dac' && !s.ins[0]) warnings.push({ msg: 'DAC pin is not connected', path: s.path });
 
@@ -140,12 +147,29 @@
     const title = (a) => a.chain.concat([G.info(a.block.type).title]).join(' › ');
     const nodeCode = {};
     const L = [];
-    L.push('// Clockwork Board program. Wires settle within the tick; flip-flops (Delays) hold state.');
+    L.push('// Sample Factory program. Wires settle within the tick; flip-flops (Delays) hold state.');
     L.push(`// s = ${state.length} registers, n = ${wires.length} wires, p[] = ${params.length} constants`);
-    L.push('return function run(N, p, s, d, sc, v) {');
+    // Each Sample gets a counter (its read position) stored after the registers.
+    const players = sources.map((src, j) => ({ path: src.path, sample: src.block.sample || null, name: src.block.name || '',
+      loop: src.block.loop !== false, s: state.length + j, v: state.length + wires.length + j, src }));
+    const nS = state.length + players.length;
+    if (players.length) L.push(`// w[] = ${players.length} sample stack(s); c = their read positions, advanced at the clock edge`);
+    L.push('return function run(N, p, s, d, sc, v, w) {');
     if (state.length) L.push('  let ' + state.map((n, i) => `s${i} = s[${i}]`).join(', ') + ';');
+    if (players.length) {
+      L.push('  w = w || [];');
+      players.forEach((pl, j) => L.push(`  const w${j} = w[${j}] || [], L${j} = w${j}.length; let c${j} = s[${pl.s}];`.padEnd(70) + `// ${pl.path}  ${pl.name || 'Sample'}`));
+    }
     for (let i = 0; i < wires.length; i += 12) L.push('  let ' + wires.slice(i, i + 12).map((n, j) => `n${i + j} = 0`).join(', ') + ';');
     L.push('  for (let i = 0; i < N; i++) {');
+    if (players.length) L.push('    // sample stacks: the sample at each read position');
+    players.forEach((pl, j) => {
+      const o = pl.src.outs[0];
+      if (!o || netOfKey(o).writers[0] !== pl.src) return;
+      const line = `n${netOfKey(o).ref.i} = c${j} < L${j} ? w${j}[c${j}] : 0;`;
+      L.push(`    ${line}`.padEnd(44) + `// ${pl.path}  ${title(pl.src)}`);
+      nodeCode[pl.path] = line;
+    });
     L.push('    // logic, in dependency order');
     for (const a of order) {
       const line = `n${netOfKey(a.outs[0]).ref.i} = ${G.ATOMS[a.block.type].expr(a.ins.map(ref))};`;
@@ -157,15 +181,21 @@
     L.push(dacs.length ? `    d[i] = Math.max(-1, Math.min(1, ${dacs.map((x) => ref(x.ins[0])).join(' + ')}));` : '    d[i] = 0;');
     const scopes = sinks.filter((x) => x.block.type === 'scope');
     scopes.forEach((x, j) => L.push(`    sc[${j}][i] = ${ref(x.ins[0])};`.padEnd(44) + `// ${x.path} Scope`));
-    const snap = state.map((n, i) => `v[${i}] = s${i};`).concat(wires.map((n, i) => `v[${state.length + i}] = n${i};`));
+    const snap = state.map((n, i) => `v[${i}] = s${i};`).concat(wires.map((n, i) => `v[${state.length + i}] = n${i};`))
+      .concat(players.map((pl, j) => `v[${pl.v}] = c${j};`));
     if (snap.length) {
       L.push('    if (i === N - 1) { // what the wires and registers held during the last tick');
       for (let i = 0; i < snap.length; i += 8) L.push('      ' + snap.slice(i, i + 8).join(' '));
       L.push('    }');
     }
     const ffs = atoms.filter((a) => a.block.type === 'delay' && a.outs[0] && netOfKey(a.outs[0]).writers[0] === a);
+    if (ffs.length || players.length) L.push('    // clock edge: every flip-flop latches its input at once, every sample stack moves on by one');
+    players.forEach((pl, j) => {
+      const line = pl.loop ? `c${j} = c${j} + 1 < L${j} ? c${j} + 1 : 0;` : `if (c${j} < L${j}) c${j}++;`;
+      L.push(`    ${line}`.padEnd(44) + `// ${pl.path}  ${pl.loop ? 'loops' : 'plays once'}`);
+      if (nodeCode[pl.path]) nodeCode[pl.path] += `\n${line}  (at the clock edge)`;
+    });
     if (ffs.length) {
-      L.push('    // clock edge: every flip-flop latches its input at once');
       L.push('    ' + ffs.map((a, j) => `const t${j} = ${ref(a.ins[0])};`).join(' '));
       ffs.forEach((a, j) => {
         const line = `s${netOfKey(a.outs[0]).ref.i} = t${j};`;
@@ -175,17 +205,19 @@
     }
     L.push('  }');
     if (state.length) L.push('  ' + state.map((n, i) => `s[${i}] = s${i};`).join(' '));
+    if (players.length) L.push('  ' + players.map((pl, j) => `s[${pl.s}] = c${j};`).join(' '));
     L.push('};');
 
-    const resources = { adder: 0, multiplier: 0, comparator: 0, mux: 0, buffer: 0 };
+    const resources = { adder: 0, multiplier: 0, comparator: 0, mux: 0, buffer: 0, sample: sources.length };
     for (const a of atoms) resources[G.ATOMS[a.block.type].cost]++;
 
     return {
       ok: errors.length === 0, errors, warnings, problemPaths,
       code: L.join('\n'),
-      nState: state.length, nNets: state.length + wires.length,
+      nState: nS, nRegs: state.length, nNets: state.length + wires.length, nSnap: state.length + wires.length + players.length,
       params: Float64Array.from(params),
-      regNames: state.map((n) => n.keys[0]),
+      regNames: state.map((n) => n.keys[0]).concat(players.map((pl) => pl.path + '#pos')),
+      players: players.map(({ path, sample, name, loop, s, v }) => ({ path, sample, name, loop, s, v })),
       scopePaths: scopes.map((x) => x.path),
       netOf, knobState, nodeCode, resources, critical, critDepth,
       registers: state.map((n) => n.keys[0]),

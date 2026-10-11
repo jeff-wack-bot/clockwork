@@ -1,6 +1,7 @@
 // Runtime for the grid prototype: one clock whose rate is a slider, from a
 // crawl up to real time (one tick per audio sample). The model runs in the
 // audio thread while the DAC is on, and on the main thread while it is off.
+// Sample stacks (decoded WAVs) are sent to the audio thread once, keyed by id.
 (function (root) {
   'use strict';
 
@@ -28,7 +29,7 @@ class GridProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.fn = null; this.p = new Float64Array(0); this.s = new Float64Array(0); this.v = new Float64Array(0);
-    this.names = []; this.rings = new Rings(0); this.wins = []; this.sc = []; this.sc1 = [];
+    this.names = []; this.lib = new Map(); this.ids = []; this.w = []; this.rings = new Rings(0); this.wins = []; this.sc = []; this.sc1 = [];
     this.rate = 48000; this.running = true; this.owner = false; this.acc = 0; this.ticks = 0; this.hold = 0;
     this.buf = new Float32Array(128); this.one = new Float32Array(1); this.steps = 0; this.since = 0; this.dirty = false; this.bad = false;
     this.port.onmessage = (e) => this.msg(e.data);
@@ -43,10 +44,12 @@ class GridProcessor extends AudioWorkletProcessor {
       try { fn = new Function(m.code)(); } catch (err) { this.port.postMessage({ type: 'error', message: String(err) }); return; }
       const oldNames = this.names, oldS = this.s;
       this.fn = fn; this.names = m.regNames; this.adopt(oldNames, oldS);
-      this.p = m.params; this.v = new Float64Array(m.nNets);
+      this.p = m.params; this.v = new Float64Array(m.nSnap); this.ids = m.samples; this.w = this.ids.map((id) => this.lib.get(id));
       this.wins = m.wins; this.rings = new Rings(m.wins.length);
       this.sc = m.wins.map(() => new Float32Array(128)); this.sc1 = m.wins.map(() => new Float32Array(1));
-    } else if (m.type === 'params') this.p = m.params;
+    } else if (m.type === 'sample') { this.lib.set(m.id, m.data); this.w = this.ids.map((id) => this.lib.get(id)); }
+    else if (m.type === 'samples') { this.ids = m.samples; this.w = this.ids.map((id) => this.lib.get(id)); }
+    else if (m.type === 'params') this.p = m.params;
     else if (m.type === 'wins') this.wins = m.wins;
     else if (m.type === 'rate') this.rate = m.rate;
     else if (m.type === 'running') this.running = m.on;
@@ -58,7 +61,7 @@ class GridProcessor extends AudioWorkletProcessor {
     } else if (m.type === 'reset') { this.s.fill(0); this.ticks = 0; this.hold = 0; this.acc = 0; this.bad = false; this.rings.clear(); this.dirty = true; }
   }
   tick() {
-    this.fn(1, this.p, this.s, this.one, this.sc1, this.v);
+    this.fn(1, this.p, this.s, this.one, this.sc1, this.v, this.w);
     this.rings.push(this.sc1, 1);
     this.hold = this.one[0]; this.ticks++; this.dirty = true;
   }
@@ -69,7 +72,7 @@ class GridProcessor extends AudioWorkletProcessor {
     if (this.running && this.rate >= 48000) {
       // real time: exactly one tick per output sample
       if (this.buf.length !== N) { this.buf = new Float32Array(N); this.sc = this.sc.map(() => new Float32Array(N)); }
-      this.fn(N, this.p, this.s, this.buf, this.sc, this.v);
+      this.fn(N, this.p, this.s, this.buf, this.sc, this.v, this.w);
       this.rings.push(this.sc, N);
       this.ticks += N; this.hold = this.buf[N - 1]; this.dirty = true;
       ch.set(this.buf);
@@ -102,6 +105,7 @@ registerProcessor('clockwork-grid', GridProcessor);
     constructor(onSnap, onStatus) {
       this.onSnap = onSnap; this.onStatus = onStatus || (() => {});
       this.prog = null; this.fn = null; this.s = new Float64Array(0); this.v = new Float64Array(0);
+      this.lib = new Map(); this.sent = new Set(); this.w = [];   // sample stacks by id; the ones the worklet has
       this.rings = new Rings(0); this.wins = [];
       this.rate = 48000; this.running = true; this.ticks = 0; this.due = 0;
       this.owner = 'main'; this.audioOn = false; this.ctx = null; this.node = null;
@@ -112,9 +116,29 @@ registerProcessor('clockwork-grid', GridProcessor);
 
     post(m) { if (this.node) this.node.port.postMessage(m); }
 
+    // A decoded WAV: Float32Array at GW.FS. Programs refer to it by id.
+    addSample(id, data) {
+      this.lib.set(id, data);
+      if (this.node && !this.sent.has(id)) { this.sent.add(id); this.post({ type: 'sample', id, data }); }
+      this.bindSamples();
+    }
+    ids() { return this.prog ? this.prog.players.map((pl) => pl.sample) : []; }
+    bindSamples() {
+      this.w = this.ids().map((id) => this.lib.get(id));
+      if (this.owner === 'main') this.publish();
+    }
+    sendSamples() {
+      if (!this.node) return;
+      for (const id of this.ids()) {
+        if (id && this.lib.has(id) && !this.sent.has(id)) { this.sent.add(id); this.post({ type: 'sample', id, data: this.lib.get(id) }); }
+      }
+    }
+
     load(prog, wins) {
+      const sameSamples = this.prog && this.ids().join() === prog.players.map((pl) => pl.sample).join();
       if (this.prog && this.prog.code === prog.code) {
         this.prog = prog; this.post({ type: 'params', params: prog.params });
+        if (!sameSamples) { this.sendSamples(); this.post({ type: 'samples', samples: this.ids() }); this.bindSamples(); }
         if (wins.join() !== this.wins.join()) { this.wins = wins; this.post({ type: 'wins', wins }); }
         if (this.owner === 'main') this.publish();
         return;
@@ -124,9 +148,11 @@ registerProcessor('clockwork-grid', GridProcessor);
       this.prog = prog; this.wins = wins;
       this.fn = GW.instantiate(prog.code);
       this.s = Float64Array.from(prog.regNames, (n) => map.get(n) || 0);
-      this.v = new Float64Array(prog.nNets);
+      this.v = new Float64Array(prog.nSnap);
       this.rings = new Rings(wins.length);
-      this.post({ type: 'program', code: prog.code, regNames: prog.regNames, nNets: prog.nNets, params: prog.params, wins });
+      this.w = this.ids().map((id) => this.lib.get(id));
+      this.sendSamples();
+      this.post({ type: 'program', code: prog.code, regNames: prog.regNames, nSnap: prog.nSnap, params: prog.params, wins, samples: this.ids() });
       if (this.owner === 'main') this.publish();
     }
 
@@ -148,7 +174,8 @@ registerProcessor('clockwork-grid', GridProcessor);
         this.node.connect(this.ctx.destination);
         this.node.port.onmessage = (e) => this.fromWorklet(e.data);
         const p = this.prog;
-        if (p) this.post({ type: 'program', code: p.code, regNames: p.regNames, nNets: p.nNets, params: p.params, wins: this.wins });
+        this.sendSamples();
+        if (p) this.post({ type: 'program', code: p.code, regNames: p.regNames, nSnap: p.nSnap, params: p.params, wins: this.wins, samples: this.ids() });
         this.post({ type: 'rate', rate: this.rate }); this.post({ type: 'running', on: this.running });
       }
       this.post({ type: 'take', state: { names: this.prog ? this.prog.regNames : [], values: this.s, ticks: this.ticks } });
@@ -187,7 +214,7 @@ registerProcessor('clockwork-grid', GridProcessor);
     runMain(n) {
       if (!this.fn || n <= 0) return;
       const sc = this.wins.map(() => new Float32Array(n));
-      this.fn(n, this.prog.params, this.s, new Float32Array(n), sc, this.v);
+      this.fn(n, this.prog.params, this.s, new Float32Array(n), sc, this.v, this.w);
       this.rings.push(sc, n);
       this.ticks += n;
       this.publish();

@@ -20,6 +20,11 @@
     delay: { title: 'Delay (flip-flop)', sym: 'z⁻¹', w: 3, h: 1, ins: [[0, 0, '']], outs: [[2, 0, '']], cost: 'buffer',
       eq: 'y[n] = x[n−1]', expr: (a) => a[0] },
   };
+  // Sources hold data of their own. A Sample is a stack of a whole song's samples,
+  // emitted one per tick: its counter advances on the same clock edge as the flip-flops.
+  const SOURCES = {
+    sample: { title: 'Sample (WAV)', sym: '▤', w: 10, h: 3, ins: [], outs: [[9, 1, '']], eq: 'y[n] = song[n]' },
+  };
   const SINKS = {
     dac: { title: 'DAC', sym: '🔊', w: 3, h: 3, ins: [[0, 1, '']], outs: [], eq: 'speaker = clip(x, −1, 1)' },
     scope: { title: 'Scope', sym: '∿', w: 10, h: 5, ins: [[0, 2, '']], outs: [], eq: '(display only)' },
@@ -30,12 +35,14 @@
     gt: 'Logic: outputs 1 if a > b, else 0.',
     switch: 'Logic, a multiplexer: passes "then" if "if" > 0, else "else".',
     delay: 'A flip-flop: the only IC with memory. Its output net is a register that takes the input\'s value at each clock edge. Every feedback loop needs one.',
+    sample: 'A stack of every sample in a WAV file (mixed to mono, resampled to 48 kHz). Each tick it emits the next one, so at real time it plays the song and at slow clocks it steps through it sample by sample. Reset rewinds it. Load a file from the panel on the right, or drop a WAV on the board.',
     dac: 'Sends the net on its pin to the speakers. Between ticks the speaker holds the last value.',
     scope: 'Plots the net on its pin over time. No effect on the computation.',
   };
   const ATOM_ORDER = ['add', 'mul', 'gt', 'switch', 'delay'];
   const SINK_ORDER = ['dac', 'scope'];
-  const info = (type) => ATOMS[type] || SINKS[type] || null;
+  const SOURCE_ORDER = ['sample'];
+  const info = (type) => ATOMS[type] || SOURCES[type] || SINKS[type] || null;
 
   // ---- sheets --------------------------------------------------------------
   function makeSheet(extra) {
@@ -344,7 +351,7 @@
   }
 
   const api = {
-    FS, TOP, BOT, ATOMS, SINKS, DOCS, ATOM_ORDER, SINK_ORDER, info, key, unkey,
+    FS, TOP, BOT, ATOMS, SOURCES, SINKS, DOCS, ATOM_ORDER, SOURCE_ORDER, SINK_ORDER, info, key, unkey,
     makeSheet, makeDef, isDef, bounds, inBounds, portsOf, innerPads, footprint, occupancy,
     newRegion, cellsOf, canPaint, paint, merge, split, erase, removeRegion, canPlace, addBlock, uses, route, builder,
   };

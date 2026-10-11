@@ -10,11 +10,12 @@ function test(name, fn) {
   try { fn(); passed++; console.log('ok   ' + name); }
   catch (e) { console.log('FAIL ' + name + '\n     ' + e.stack.split('\n').slice(0, 3).join('\n     ')); process.exitCode = 1; }
 }
-function run(prog, N) {
+function run(prog, N, w, s) {
   const fn = instantiate(prog.code);
-  const s = new Float64Array(prog.nState), d = new Float32Array(N);
+  s = s || new Float64Array(prog.nState);
+  const d = new Float32Array(N);
   const sc = prog.scopePaths.map(() => new Float64Array(N));
-  fn(N, prog.params, s, d, sc, new Float64Array(prog.nNets));
+  fn(N, prog.params, s, d, sc, new Float64Array(prog.nSnap), w);
   return { s, d, sc };
 }
 const defs = L.starterDefs();
@@ -134,6 +135,49 @@ test('generated code does not change when a knob turns', () => {
   const b = compile(proj);
   assert.strictEqual(a.code, b.code);
   assert.ok(Array.from(b.params).includes(7));
+});
+
+
+// A Sample block, a flip-flop after it, and scopes on both.
+function sampleSheet(loop) {
+  const r = G.makeSheet(), b = G.builder(r, defs);
+  b.block('song', 'sample', 0, 0, { sample: 'x', loop });
+  b.block('ff', 'delay', 14, 1);
+  b.block('sa', 'scope', 20, 4); b.block('sb', 'scope', 20, 10);
+  b.net('song.out0', ['ff.in0', 'sa.in0']);
+  b.net('ff.out0', 'sb.in0');
+  return { version: 2, root: r, defs, values: {} };
+}
+
+test('a sample stack emits one sample per tick and loops', () => {
+  const prog = compile(sampleSheet(true));
+  assert.ok(prog.ok, JSON.stringify(prog.errors));
+  assert.strictEqual(prog.nState, 2);                        // the flip-flop and the read position
+  assert.strictEqual(prog.players.length, 1);
+  const song = Float32Array.from([0.1, 0.2, 0.3]);
+  const { sc, s } = run(prog, 7, [song]);
+  assert.deepStrictEqual(Array.from(sc[0], (x) => +x.toFixed(3)), [0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1]);
+  // the flip-flop shows the sample from the previous tick: the same clock drives both
+  assert.deepStrictEqual(Array.from(sc[1], (x) => +x.toFixed(3)), [0, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3]);
+  assert.strictEqual(s[prog.players[0].s], 1);               // read position persists between blocks of ticks
+  const again = run(prog, 2, [song], s);
+  assert.deepStrictEqual(Array.from(again.sc[0], (x) => +x.toFixed(3)), [0.2, 0.3]);
+});
+
+test('a sample stack can play once, and emits 0 with no WAV loaded', () => {
+  const prog = compile(sampleSheet(false));
+  const { sc } = run(prog, 5, [Float32Array.from([0.5, -0.5])]);
+  assert.deepStrictEqual(Array.from(sc[0]), [0.5, -0.5, 0, 0, 0]);
+  assert.deepStrictEqual(Array.from(run(prog, 3).sc[0]), [0, 0, 0]);
+  const empty = sampleSheet(true); delete empty.root.blocks[0].sample;
+  assert.ok(compile(empty).warnings.some((w) => /no WAV/.test(w.msg)));
+});
+
+test('the sample example compiles and its counter is named by path', () => {
+  const prog = compile(L.exampleProject(3));
+  assert.ok(prog.ok);
+  assert.strictEqual(prog.players[0].sample, 'demo:factory-song');
+  assert.ok(prog.regNames.includes(prog.players[0].path + '#pos'));
 });
 
 console.log(`\n${passed} passed`);

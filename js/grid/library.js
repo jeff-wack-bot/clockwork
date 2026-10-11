@@ -166,6 +166,21 @@
     return r;
   }
 
+  // A sample stack through a filter. The built-in song is synthesized at load time
+  // (samples.js); load your own WAV into the block from the panel on the right.
+  function exSample(defs) {
+    const r = G.makeSheet(), b = G.builder(r, defs);
+    b.block('song', 'sample', 2, 2, { sample: 'demo:factory-song', name: 'Factory song (built in)', loop: true });
+    b.block('lp', 'comp', 15, 2, { def: 'OnePole' });
+    b.block('vol', 'mul', 22, 2);
+    b.block('dac', 'dac', 28, 0); b.block('scope', 'scope', 28, 4, { window: 4800 });
+    b.konst('vol.in1', 'down', 2, 0.5, knob('volume', 0, 1));
+    b.net('song.out0', 'lp.in0');
+    b.net('lp.out0', 'vol.in0');
+    b.net('vol.out0', ['dac.in0', 'scope.in0']);
+    return r;
+  }
+
   const EXAMPLES = [
     { title: '1 · Counter and pipeline', rate: 4, make: exCounter,
       note: 'Add and flip-flop make a counter: the Add settles to count + step within the tick, and the flip-flop stores it at the clock edge. Each extra flip-flop holds the count one tick longer. Drag the "step" knob.' },
@@ -173,6 +188,8 @@
       note: 'Zoom into the VCO with the mouse wheel to find its Phasor, and into that to see the registers that make the ramp.' },
     { title: '3 · Sequenced synth', rate: FS, make: exSynth,
       note: 'No panels: to change the melody, zoom into Seq4 and turn its knobs. Slide the clock down to hear (and see) it slow to a crawl.' },
+    { title: '4 · Sample player (WAV)', rate: FS, make: exSample,
+      note: 'The long block is a stack of every sample in a song, emitted one per tick. Turn the filter knob inside OnePole, slide the clock down to step through the song, or select the block and load your own WAV (or drop one on the board).' },
   ];
 
   function exampleProject(i, existingDefs) {

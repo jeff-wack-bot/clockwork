@@ -1,16 +1,20 @@
-# ⚙ Clockwork
+# ▤ Sample Factory
 
-A transparent, FPGA-flavoured dataflow synthesizer for the browser. Oscillators,
-sequencers, envelopes and filters are built from **seven atomic blocks** that run
-on **one global 48 kHz clock**, and nothing happens under the hood: you can see
-the compiled program, the live value on every wire, the "hardware" your design
-uses, and its critical path.
+A transparent, FPGA-flavoured dataflow synthesizer for the browser, laid out like
+a circuit board. Oscillators, sequencers, envelopes and filters are built from a
+handful of atomic ICs that run on **one global 48 kHz clock**, and nothing
+happens under the hood: you can see the compiled program, the live value on
+every trace, the "hardware" your design uses, and its critical path.
+
+Sample Factory is the second version of Clockwork Board. What's new is the
+**Sample** block: load a WAV and it becomes a stack of every sample in the song,
+emitted one per tick on the same clock that drives the flip-flops.
 
 **Live demo:** https://jeff-wack-bot.github.io/clockwork/ (style lab: https://jeff-wack-bot.github.io/clockwork/styles.html)
 
 There are two front-ends:
 
-* `index.html` is the **board** prototype. ICs are wired with traces on two layers, each net is
+* `index.html` is **Sample Factory**, the board. ICs are wired with traces on two layers, each net is
   a register whose colour is its value, constants have handles instead of panels, zooming in is
   how you enter an IC, and a single slider sets the clock from 0.5 Hz up to real time. See
   [GRID-PLAN.md](GRID-PLAN.md).
@@ -29,7 +33,25 @@ No build step and no dependencies. Either:
 Then press **▶ Start audio**. The default patch is a sequenced synth. To watch
 it tick instead, choose the **slow** clock and press **Step** (or Space).
 
-Tests: `node tests/test.js` (patch editor) and `node tests/grid.test.js` (grid prototype)
+Tests: `node tests/test.js` (patch editor) and `node tests/grid.test.js` (board)
+
+## Sample stacks (WAV files)
+
+Pick **Sample (WAV)** under *Sources* in the palette and click to place it, or
+drop a WAV file anywhere on the board. Example **4 · Sample player** has a
+built-in song (synthesized at load time) running through a filter.
+
+* The browser decodes the file, mixes it to mono and resamples it to 48 kHz, so
+  at real time one tick is one sample and the song plays at its true pitch.
+* Each tick the block puts the sample at its read position on its output pin.
+  The read position is a counter that moves on at the clock edge, with the
+  flip-flops. A flip-flop wired to its output therefore holds the previous sample.
+* At a slow clock you can step through the song one sample at a time. The block
+  draws the whole song, with a playhead at the read position.
+* **Reset** rewinds it. At the end it loops, or stops and emits 0 (set this in the panel).
+* Songs are kept in the browser's IndexedDB, keyed by a hash of their content.
+  Projects (localStorage and exported JSON) store only that key. After importing
+  a project on another machine, load the WAV again.
 
 ## The atoms
 
