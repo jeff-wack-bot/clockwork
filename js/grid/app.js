@@ -562,6 +562,13 @@
       let h = `<h2>${esc(b.def)} <span class="dim">${b.id}</span></h2><p class="dim small">${where(F)}</p>`;
       h += `<p>${esc(def ? def.description || 'Composite block.' : 'Missing definition!')}</p>`;
       h += '<p><button data-act="zoom">Zoom in ⤵</button></p>';
+      const alts = def ? swappable(F, b) : [];
+      if (alts.length) {
+        const n = F.sheet.blocks.filter((x) => x.type === 'comp' && x.def === b.def).length;
+        h += `<h3>Swap chip</h3><p class="dim small">Chips with the same footprint and pins fit the same socket.</p>
+          <label class="field"><span>Replace with</span><select data-prop="swap"><option value="">choose…</option>${alts.map((a) => `<option>${esc(a)}</option>`).join('')}</select></label>`;
+        if (n > 1) h += `<label class="field"><span>All ${n} here</span><input type="checkbox" data-prop="swapall" checked></label>`;
+      }
       if (def) {
         h += `<h3>Definition (shared by ${instances(b.def)})</h3>`;
         h += `<p class="dim small">Footprint ${def.fw}×${def.fh} cells; inside is ${def.s}× finer (${def.fw * def.s}×${def.fh * def.s}).</p>`;
@@ -609,6 +616,26 @@
     h += '<p><button data-act="wav">Load WAV…</button></p>';
     h += '<p class="dim small">The file is mixed to mono and resampled to 48 kHz, so at real time one tick is one sample. Its read position is a counter that moves on at every clock edge, with the flip-flops; Reset rewinds it. Songs are kept in this browser (IndexedDB), not in exported files.</p>';
     return h;
+  }
+
+  // Definitions that fit the same socket: same footprint, same pins.
+  function signature(def) { return JSON.stringify([def.fw, def.fh, def.ports.map((p) => p.dir + p.row).sort()]); }
+  function swappable(F, b) {
+    const sig = signature(app.project.defs[b.def]);
+    return Object.keys(app.project.defs).sort().filter((n) => n !== b.def && signature(app.project.defs[n]) === sig &&
+      !(F.def && (n === F.def.name || G.uses(app.project.defs, n, F.def.name))));
+  }
+  function swapChip(F, b, name, all) {
+    const old = b.def;
+    for (const x of all ? F.sheet.blocks.filter((q) => q.type === 'comp' && q.def === old) : [b]) {
+      x.def = name;
+      // knob settings made inside the old chip don't belong to the new one
+      const prefix = F.path + x.id + '/';
+      for (const k of Object.keys(app.project.values)) if (k.startsWith(prefix)) delete app.project.values[k];
+    }
+    if (document.activeElement) document.activeElement.blur();
+    app.changed(); renderInspector();
+    toast(`Swapped ${all ? 'every ' + old : old} for ${name}.`);
   }
 
   function regionHtml(F, rid) {
@@ -709,6 +736,12 @@
     if (!b) return;
     if (prop === 'window') { b.window = num; app.changed(); return; }
     if (prop === 'loop') { b.loop = v === '1'; app.changed(); return; }
+    if (prop === 'swapall') return;
+    if (prop === 'swap') {
+      const all = $('#inspector [data-prop="swapall"]');
+      if (v) swapChip(s.F, b, v, !!(all && all.checked));
+      return;
+    }
     const def = app.project.defs[b.def];
     if (prop === 'def.description') def.description = v;
     else if (prop.startsWith('port.')) {

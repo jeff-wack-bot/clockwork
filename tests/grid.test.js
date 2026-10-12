@@ -180,4 +180,103 @@ test('the sample example compiles and its counter is named by path', () => {
   assert.ok(prog.regNames.includes(prog.players[0].path + '#pos'));
 });
 
+
+// ---- tuning library (Benson, chapter 5) -------------------------------------------
+const TU = require('../js/grid/tunings.js');
+// A one-off board: the named chip with constants on its inputs and a scope on each output.
+function probe(defName, inputs, ticks) {
+  const r = G.makeSheet(), b = G.builder(r, defs), def = defs[defName];
+  b.block('u', 'comp', 4, 2, { def: defName });
+  const ins = inputs.map((v, i) => b.konst(`u.in${i}`, 'left', 3, v));
+  const outs = G.portsOf(def, 'out').map((_, i) => { b.block('s' + i, 'scope', 20 + 12 * i, 30 + 6 * i); return i; });
+  for (let i = outs.length - 1; i >= 0; i--) b.net(`u.out${i}`, `s${i}.in0`);
+  const project = { version: 2, root: r, defs, values: {} };
+  return {
+    run(vals, n) { vals.forEach((v, i) => { r.regions[ins[i]].value = v; }); const prog = compile(project); assert.ok(prog.ok, JSON.stringify(prog.errors)); return run(prog, n || ticks || 1).sc; },
+  };
+}
+const near = (a, b, eps) => Math.abs(a - b) < (eps || 1e-9);
+
+test('tunings reproduce Benson\'s tables (cents)', () => {
+  const c = (id) => TU.ratios(id).map((r) => +TU.cents(r).toFixed(3));
+  assert.deepStrictEqual([2, 4, 5, 7, 9, 11].map((i) => c('pythagorean')[i]), [203.910, 407.820, 498.045, 701.955, 905.865, 1109.775]);
+  assert.deepStrictEqual([4, 9, 11].map((i) => c('just')[i]), [386.314, 884.359, 1088.269]);
+  assert.deepStrictEqual([2, 4, 5, 9, 11].map((i) => c('meantone')[i]), [193.157, 386.314, 503.422, 889.735, 1082.892]);
+  // Werckmeister III: thirds on C and F about 4 cents sharp, on C♯ and F♯ about 22 (§5.13)
+  const w = TU.ratios('werckmeister'), third = (a) => TU.cents(w[(a + 4) % 12] / w[a] * (a + 4 >= 12 ? 2 : 1)) - TU.cents(5 / 4);
+  assert.ok(near(third(0), 3.9, 0.1) && near(third(5), 3.9, 0.1) && near(third(1), 21.5, 0.1) && near(third(6), 21.5, 0.1));
+  assert.ok(near(TU.cents(TU.ratios('equal')[4]) - TU.cents(5 / 4), 13.686, 0.001));
+});
+
+test('every Tune chip returns its table, over two octaves', () => {
+  for (const id of TU.ORDER) {
+    const name = Object.keys(defs).find((n) => n.startsWith('Tune ') && defs[n].description.includes(TU.TUNINGS[id].title));
+    const p = probe(name, [0]), want = TU.ratios(id);
+    for (let s = 0; s < 24; s++) assert.ok(near(p.run([s])[0][0], want[s % 12] * (s >= 12 ? 2 : 1), 1e-12), `${name} at ${s}`);
+  }
+  const sig = (d) => JSON.stringify([d.fw, d.fh, d.ports.map((q) => q.dir + q.row)]);
+  const tunes = Object.keys(defs).filter((n) => n.startsWith('Tune '));
+  assert.strictEqual(tunes.length, 6);
+  assert.ok(tunes.every((n) => sig(defs[n]) === sig(defs['Tune Just'])));          // they all fit one socket
+  assert.strictEqual(sig(defs['Comma Pump']), sig(defs['Meantone Pump']));
+});
+
+test('the chord score steps through I–vi–ii–V by quarters of its phase', () => {
+  const p = probe('Chords', [0]);
+  const at = (ph) => p.run([ph]).map((s) => s[0]);
+  assert.deepStrictEqual([0.1, 0.3, 0.6, 0.9].map(at), [[12, 16, 19], [9, 12, 16], [14, 17, 21], [7, 11, 14]]);
+});
+
+test('the otonal score gives integer multiples of one fundamental', () => {
+  const p = probe('Harmonics', [0.6, 5]);      // third step (ii) with f0 = 5
+  assert.deepStrictEqual(p.run([0.6, 5]).map((s) => s[0]), [54 * 5, 64 * 5, 80 * 5, 108 * 5]);
+});
+
+test('a divider\'s period is exactly N ticks', () => {
+  const p = probe('Divider', [10]), sq = p.run([10], 40)[0];
+  const rises = []; for (let i = 1; i < sq.length; i++) if (sq[i] > sq[i - 1]) rises.push(i);
+  assert.ok(rises.length >= 3 && rises.slice(1).every((x, i) => x - rises[i] === 10), rises.join(','));
+  assert.ok(Math.max(...sq) === 1 && Math.min(...sq) === -1);
+});
+
+test('the sine VCO is a clean ±1 sine at its frequency', () => {
+  const N = 48000, sc = probe('SineVCO', [1000]).run([1000], N)[0];
+  let crossings = 0, peak = 0;
+  for (let i = 1; i < N; i++) { if (sc[i - 1] < 0 && sc[i] >= 0) crossings++; peak = Math.max(peak, Math.abs(sc[i])); }
+  assert.ok(Math.abs(crossings - 1000) <= 1, 'crossings ' + crossings);
+  assert.ok(peak > 0.99 && peak <= 1.0001, 'peak ' + peak);
+  // close to a true sine: compare with sin at the same phase
+  let err = 0; for (let i = 0; i < 480; i++) err = Math.max(err, Math.abs(sc[i] - Math.sin(2 * Math.PI * 1000 * i / 48000)));
+  assert.ok(err < 0.06, 'max deviation ' + err);
+});
+
+test('the comma pump sinks by 81/80 per round; the meantone pump does not', () => {
+  for (const [name, perRound] of [['Comma Pump', 80 / 81], ['Meantone Pump', 1]]) {
+    const r = G.makeSheet(), b = G.builder(r, defs);
+    b.block('ph', 'comp', 2, 2, { def: 'Phasor' }); b.block('p', 'comp', 12, 2, { def: name });
+    b.block('s0', 'scope', 30, 0); b.block('s1', 'scope', 30, 8); b.block('s2', 'scope', 30, 16);
+    b.konst('ph.in0', 'left', 3, 12000); b.konst('p.in1', 'left', 2, 100);          // a trigger every 4 ticks, tonic 100 Hz
+    b.net('ph.out1', 'p.in0');
+    for (let i = 2; i >= 0; i--) b.net(`p.out${i}`, `s${i}.in0`);
+    const prog = compile({ version: 2, root: r, defs, values: {} });
+    assert.ok(prog.ok, JSON.stringify(prog.errors));
+    const { sc } = run(prog, 4 * 16 + 4);
+    const roots = [1, 17, 33, 49, 65].map((t) => sc[0][t]);                           // the I chord, once per round
+    roots.forEach((x, k) => assert.ok(near(x, 100 * Math.pow(perRound, k), 1e-9), `${name} round ${k}: ${x}`));
+    // every chord is pure: the third is 5/4 or 6/5 of the root in just, the fifth 3/2
+    if (name === 'Comma Pump') for (let t = 0; t < 64; t++) {
+      const q = sc[1][t] / sc[0][t];
+      assert.ok(near(q, 5 / 4) || near(q, 6 / 5)); assert.ok(near(sc[2][t] / sc[0][t], 3 / 2));
+    }
+  }
+});
+
+test('the tuning examples compile without warnings', () => {
+  for (let i = 4; i < L.EXAMPLES.length; i++) {
+    const prog = compile(L.exampleProject(i));
+    assert.ok(prog.ok, L.EXAMPLES[i].title + JSON.stringify(prog.errors));
+    assert.strictEqual(prog.warnings.length, 0, L.EXAMPLES[i].title + JSON.stringify(prog.warnings));
+  }
+});
+
 console.log(`\n${passed} passed`);

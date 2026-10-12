@@ -171,3 +171,40 @@ Decisions:
 * The repository and Pages URL keep the name `clockwork`. The previous version
   is tagged `clockwork-board-v1`.
 
+## Revision 5: tuning library (2026-10-12)
+
+Oscillators and sequencers built for the tones of Benson, *Music: A Mathematical
+Offering*, chapter 5 (Pythagorean, just, meantone, irregular and equal tunings).
+
+Decisions:
+
+* **No new atoms.** Everything is built from the original seven atoms.
+  Division is the one operation that would have helped (a live "size of the
+  fifth" knob needs 1/g). Instead, tunings are tables, and the constants for
+  derived variants are computed when the library is built.
+* **Tunings are ROM chips.** The ROM is one octave fold plus a priority chain of
+  11 comparators and switches, so its critical path is 13 operations. It is
+  laid out once and copied with different constants, giving six chips with
+  identical footprints. A new inspector control swaps a chip for any other
+  definition with the same footprint and pins, optionally every copy on the
+  board at once. Knob settings made inside the old chip are dropped.
+* **Tuning data as in the book.** `js/grid/tunings.js` stores each tuning in
+  Eitz notation (line of fifths plus syntonic/Pythagorean commas) and derives
+  the ratios. Tests check them against Benson's cent values.
+* **Which historical tunings:** just = Marpurg's Monochord No. 1 (it keeps
+  D⁰, so the ii triad is visibly wrong, as in §5.11). Meantone = Aaron 1523
+  (E♭…C♯ plus A♭, wolf fifth C♯–A♭). Vallotti in Young's version. Pythagorean spans E♭…G♯.
+* **Semitone input 0–23** (two octaves above the tonic). Negative numbers aren't
+  supported; lower the tonic instead.
+* **Pins on alternate rows** for multi-output blocks (scores, pump, Bank4). With
+  outputs on adjacent rows the maze router can box one in, depending on routing order.
+* **Registers that must start at "1"** (the pump's root ratio) store value − 1,
+  because Reset clears every register to 0.
+* **The comma pump** uses the root moves ×5/6, ×4/3, ×4/3, ×2/3 (I→vi→ii→V→I),
+  whose product is 80/81. The meantone pump uses the same motion in ¼-comma,
+  whose product is exactly 1.
+* **Library cache.** Laying out 20 definitions takes about 1.8 s on the Pi. The
+  result is cached in localStorage under a hash of the builder code.
+
+Documentation for this round is in the notebook (`AI_work/sample-factory/`).
+

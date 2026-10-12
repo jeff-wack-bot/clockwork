@@ -53,6 +53,27 @@ built-in song (synthesized at load time) running through a filter.
   Projects (localStorage and exported JSON) store only that key. After importing
   a project on another machine, load the WAV again.
 
+## Tuning library (Benson, *Music: A Mathematical Offering*, chapter 5)
+
+In a digital oscillator the frequency is linear in the phase increment, so an
+interval is a multiplication and a tuning is a table of ratios. You don't need
+the analog 1 V/octave exponential. The library builds on that:
+
+| Block | What it is |
+|---|---|
+| **Tune Pythagorean / Just / Meantone / Werckmeister / Vallotti / Equal** | Tuning ROMs. Input: semitones above the tonic (0–23). Output: frequency ratio. All six share one footprint, so a chip swaps for another (inspector → *Swap chip*, optionally every copy on the board). The ratios come from the Eitz-notation tables in `js/grid/tunings.js`. |
+| **Chords** | Chord score: three voices × four steps of semitone numbers (default I–vi–ii–V). |
+| **Harmonics** | Otonal score: four voices × four steps of harmonic numbers, times one fundamental f0. |
+| **Periods** | Utonal score: periods in ticks, for Dividers. |
+| **Comma Pump / Meantone Pump** | A flip-flop holds the chord root as a ratio of the tonic, and each chord change multiplies it by an interval. With just intervals I–vi–ii–V–I lands 81/80 flat each time round; with meantone intervals it closes. |
+| **Divider** | Counter oscillator, f = 48000/N: the integer-period (FPGA) way to make a tone. |
+| **SineVCO** | Phasor plus a parabolic sine, for nearly pure tones. |
+| **Bank4**, **Mux4** | Four mixed VCOs; a phase-addressed 4:1 selector (the building block of the scores). |
+
+Examples 5–8 put these together: *Six temperaments*, *Chords as harmonics*,
+*The comma pump* and *Dividers*. The library is laid out by the router the
+first time and then cached in localStorage.
+
 ## The atoms
 
 | Block | Computes |
