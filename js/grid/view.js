@@ -5,6 +5,10 @@
   'use strict';
   const G = root.GW;
 
+  // Trace width factors from narrowest (reach 0, at a reader) to widest (the driver).
+  const TAPER = [0.55, 0.69, 0.82, 0.96, 1.1, 1.24, 1.37, 1.5];
+  const TAPER_FLAT = 3;   // nets with no driver: no direction to show
+  const taperBucket = (r) => Math.max(0, Math.min(TAPER.length - 1, Math.round(r * (TAPER.length - 1))));
   const ENTER_PX = 6;     // inner board units this big (px) or bigger: you are working inside the IC
   const MIN_INNER = 0.3;  // below this an IC's board is too small to be worth drawing
   const SKETCH_PX = 4;    // below this a board is drawn as one stroke per layer (colours are invisible anyway)
@@ -164,24 +168,59 @@
         const kb = sheet.regions[rid].knob;
         if (kb && !drivers.has(rid)) addDriver(sheet.top[G.key(kb.x, kb.y)] === rid ? G.TOP : G.BOT, kb.x, kb.y);
       }
-      const dist = new Map(), far = new Map();
+      // A constant with no knob enters at its free end: the cell farthest from the
+      // pins that read it.
+      const readers = new Map();
+      for (const [k, o] of occ) if (o.pad && sheet.top[k]) {
+        const rid = sheet.top[k];
+        if (!readers.has(rid)) readers.set(rid, []);
+        readers.get(rid).push([G.TOP, ...G.unkey(k)]);
+      }
+      for (const [rid, pins] of readers) {
+        if (drivers.has(rid)) continue;
+        const seen = new Set(pins.map(([l, x, y]) => l + ':' + G.key(x, y))), q = pins.slice();
+        for (let i = 0; i < q.length; i++) {
+          const [l, x, y] = q[i];
+          for (const [nl, nx, ny] of [[l, x + 1, y], [l, x - 1, y], [l, x, y + 1], [l, x, y - 1], [l === G.TOP ? G.BOT : G.TOP, x, y]]) {
+            const c = nl + ':' + G.key(nx, ny);
+            if (sheet[nl][G.key(nx, ny)] === rid && !seen.has(c)) { seen.add(c); q.push([nl, nx, ny]); }
+          }
+        }
+        if (q.length > pins.length) addDriver(...q[q.length - 1]);
+      }
+      // Width follows how much of the net still lies downstream: each cell's
+      // "reach" is the distance to the farthest cell beyond it (away from the
+      // driver), as a fraction of the reach at the driver. So every net is widest
+      // at its driver and narrowest at every reader, never widens along the flow,
+      // and at a branch the long run keeps its width while a short spur starts thin.
+      const dist = new Map(), reach = new Map();
+      const around = (l, x, y) => [[l, x + 1, y], [l, x - 1, y], [l, x, y + 1], [l, x, y - 1], [l === G.TOP ? G.BOT : G.TOP, x, y]];
       for (const [rid, starts] of drivers) {
         const q = [];
         for (const [l, x, y] of starts) { const c = l + ':' + G.key(x, y); if (!dist.has(c)) { dist.set(c, 0); q.push([l, x, y]); } }
-        let maxd = 0;
         for (let i = 0; i < q.length; i++) {
           const [l, x, y] = q[i], d = dist.get(l + ':' + G.key(x, y));
-          maxd = Math.max(maxd, d);
-          for (const [nl, nx, ny] of [[l, x + 1, y], [l, x - 1, y], [l, x, y + 1], [l, x, y - 1], [l === G.TOP ? G.BOT : G.TOP, x, y]]) {
+          for (const [nl, nx, ny] of around(l, x, y)) {
             const c = nl + ':' + G.key(nx, ny);
             if (sheet[nl][G.key(nx, ny)] !== rid || dist.has(c)) continue;
             dist.set(c, d + 1); q.push([nl, nx, ny]);
           }
         }
-        far.set(rid, maxd);
+        const down = new Map();
+        for (let i = q.length - 1; i >= 0; i--) {
+          const [l, x, y] = q[i], c = l + ':' + G.key(x, y), d = dist.get(c);
+          let h = 0;
+          for (const [nl, nx, ny] of around(l, x, y)) {
+            const n = nl + ':' + G.key(nx, ny);
+            if (down.has(n) && dist.get(n) === d + 1) h = Math.max(h, down.get(n) + 1);
+          }
+          down.set(c, h);
+        }
+        const top = Math.max(1, ...starts.map(([l, x, y]) => down.get(l + ':' + G.key(x, y)) || 0));
+        for (const [c, h] of down) reach.set(c, h / top);
       }
       const traces = { top: new Map(), bot: new Map() };
-      const taper = { top: new Map(), bot: new Map() };   // rid -> 4 paths, thick near the driver
+      const taper = { top: new Map(), bot: new Map() };   // rid -> TAPER.length paths, by reach
       const chevrons = { top: [], bot: [] };
       const junctions = [];
       const pt = (x, y) => edge.get(G.key(x, y)) || [x + 0.5, y + 0.5];
@@ -196,7 +235,7 @@
           let p = traces[layer].get(rid);
           if (!p) {
             p = new Path2D(); traces[layer].set(rid, p);
-            taper[layer].set(rid, [new Path2D(), new Path2D(), new Path2D(), new Path2D()]);
+            taper[layer].set(rid, TAPER.map(() => new Path2D()));
           }
           let linked = false;
           for (const [nx, ny] of [[x + 1, y], [x, y + 1]]) {
@@ -207,7 +246,8 @@
             const pa = pt(a[0], a[1]), pb = pt(b[0], b[1]);
             p.moveTo(pa[0], pa[1]); p.lineTo(pb[0], pb[1]); linked = true;
             const d = D(a[0], a[1]);
-            const bucket = d === undefined ? 1 : Math.min(3, Math.floor(4 * d / (far.get(rid) + 1)));
+            const ra = reach.get(layer + ':' + G.key(a[0], a[1])), rb = reach.get(layer + ':' + G.key(b[0], b[1]));
+            const bucket = ra === undefined || rb === undefined ? TAPER_FLAT : taperBucket((ra + rb) / 2);
             const tp = taper[layer].get(rid)[bucket];
             tp.moveTo(pa[0], pa[1]); tp.lineTo(pb[0], pb[1]);
             if (d !== undefined && d % 3 === 1) chevrons[layer].push([rid, (pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, pb[0] - pa[0], pb[1] - pa[1]]);
@@ -237,7 +277,7 @@
       }
       for (const rid in sheet.regions) { const kb = sheet.regions[rid].knob; if (kb) anchors[rid] = [kb.x, kb.y]; }
       for (const { b, fp } of blocks) grow(b.x, b.y, fp.w, fp.h);
-      g = { ver: this.app.version, occ, blocks, traces, taper, chevrons, junctions, driven: new Set(drivers.keys()), all, vias, pads, anchors,
+      g = { ver: this.app.version, occ, blocks, traces, taper, reach, chevrons, junctions, driven: new Set(drivers.keys()), all, vias, pads, anchors,
         bbox: x0 === Infinity ? null : { x0: x0 - 1, y0: y0 - 1, x1: x1 + 1, y1: y1 + 1 } };
       this.cache.set(sheet, g);
       return g;
@@ -306,7 +346,7 @@
       // One net's copper; with the taper style it is thick at the driver, thin at the readers.
       const strokeNet = (layer, rid, width) => {
         if (style.dir === 'taper') {
-          g.taper[layer].get(rid).forEach((tp, k) => { ctx.lineWidth = width * (1.5 - 0.3 * k); ctx.stroke(tp); });
+          g.taper[layer].get(rid).forEach((tp, k) => { ctx.lineWidth = width * TAPER[k]; ctx.stroke(tp); });
         } else { ctx.lineWidth = width; ctx.stroke(g.traces[layer].get(rid)); }
       };
       // Registers as regions: a soft copper pour around every flip-flop's net, or a double outline.
@@ -470,18 +510,23 @@
       ctx.translate(b.x + fp.w / 2, b.y + fp.h / 2); ctx.rotate((b.rot || 0) * Math.PI / 2); ctx.translate(-t.w / 2, -t.h / 2);
       const mx = t.w / 2, my = t.h / 2;
       const lw = (w, maxPx) => Math.min(w, maxPx / px);
-      const leadW = via ? lw(W_TOP, 10) : lw(0.11, 3);
       const R = via ? 0.42 : b.type === 'delay' ? 0.42 : 0.72;
-      const lead = (pts, v) => {
-        if (via) {   // traces running into the via, with the usual casing
-          ctx.strokeStyle = '#08090c'; ctx.lineWidth = lw(W_CASE, 15);
-          ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
-        }
-        ctx.strokeStyle = colorOf(v); ctx.lineWidth = leadW;
-        ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
+      // The atom has no leads of its own: each net's copper continues from the pin
+      // into the via, at the width and colour the trace has at that pin.
+      const geo = this.geom(sh), taper = app.style.dir === 'taper';
+      const runs = [];
+      const run = (pts, pad) => {
+        const rid = sh.top[G.key(pad.x, pad.y)];
+        if (!rid) return;
+        const r = geo.reach.get(G.TOP + ':' + G.key(pad.x, pad.y));
+        runs.push({ pts, color: colorOf(app.valueOf(F.path + rid)), f: taper ? TAPER[r === undefined ? TAPER_FLAT : taperBucket(r)] : 1 });
       };
-      t.ins.forEach(([lx, ly], i) => lead([[lx + 0.5, ly + 0.5], [mx - R - 0.1, ly + 0.5], [mx, my]], val(ins[i])));
-      t.outs.forEach(([lx, ly], i) => lead([[mx, my], [lx + 0.5, ly + 0.5]], val(outs[i])));
+      t.ins.forEach(([lx, ly], i) => run([[lx + 0.5, ly + 0.5], [mx - R - 0.1, ly + 0.5], [mx, my]], ins[i]));
+      t.outs.forEach(([lx, ly], i) => run([[mx, my], [lx + 0.5, ly + 0.5]], outs[i]));
+      const strokeRun = (pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
+      ctx.strokeStyle = '#08090c';
+      for (const r of runs) { ctx.lineWidth = lw(W_CASE, 15) * r.f; strokeRun(r.pts); }
+      for (const r of runs) { ctx.strokeStyle = r.color; ctx.lineWidth = lw(W_TOP, 10) * r.f; strokeRun(r.pts); }
       const vout = outs[0] ? val(outs[0]) : undefined;
       const ring = outline || (via ? '#e8ebf2' : '#d9b36c');
       ctx.lineWidth = lw(outline ? 0.12 : 0.08, outline ? 3 : 2);
