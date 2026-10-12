@@ -793,7 +793,7 @@
   $('#examples').innerHTML = '<option value="">Examples…</option>' + GW.EXAMPLES.map((x, i) => `<option value="${i}">${esc(x.title)}</option>`).join('');
   $('#examples').addEventListener('change', (e) => {
     const i = Number(e.target.value); e.target.value = '';
-    if (!GW.EXAMPLES[i] || !confirm(`Load "${GW.EXAMPLES[i].title}"? This replaces the root sheet (the library is kept).`)) return;
+    if (!GW.EXAMPLES[i] || !confirm(`Load "${GW.EXAMPLES[i].title}"? This replaces the root sheet and refreshes the built-in blocks; blocks you made yourself are kept.`)) return;
     loadExample(i);
   });
   function loadExample(i) {

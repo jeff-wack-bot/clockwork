@@ -279,4 +279,20 @@ test('the tuning examples compile without warnings', () => {
   }
 });
 
+
+test('loading an example refreshes stale built-in blocks and keeps the user\'s own', () => {
+  // A project saved by an older version: its Phasor has the loop with no flip-flop in it.
+  const stale = L.starterDefs();
+  const ph = stale.Phasor, ff = ph.blocks.find((b) => b.type === 'delay');
+  ff.type = 'add';                                   // the old design: no flip-flop in the loop
+  const mine = G.makeDef('MyBlock', 4, 3, 8, [{ dir: 'in', row: 1, name: 'in' }, { dir: 'out', row: 1, name: 'out' }], '');
+  stale.MyBlock = mine;
+  assert.ok(!compile({ version: 2, root: L.exampleProject(5).root, defs: stale, values: {} }).ok);   // the reported bug
+  for (let i = 0; i < L.EXAMPLES.length; i++) {
+    const p = L.exampleProject(i, stale);
+    assert.ok(compile(p).ok, L.EXAMPLES[i].title);
+    assert.ok(p.defs.MyBlock, 'user block kept');
+  }
+});
+
 console.log(`\n${passed} passed`);

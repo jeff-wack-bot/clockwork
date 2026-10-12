@@ -506,8 +506,11 @@
       note: 'Counters that divide the 48 kHz clock by whole numbers: periods 216:180:144 (= 6:5:4) give a just minor triad, 180:144:120 (15:12:10) a just major one.' },
   ];
 
+  // Built-in definitions always come from the current library (a saved copy may
+  // be from an older version with different semantics); definitions the user
+  // made under other names are kept.
   function exampleProject(i, existingDefs) {
-    const defs = Object.assign(starterDefs(), existingDefs || {});
+    const defs = Object.assign({}, existingDefs || {}, starterDefs());
     return { version: 2, root: EXAMPLES[i].make(defs), defs, values: {} };
   }
 
