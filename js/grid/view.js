@@ -142,7 +142,7 @@
     // Everything about a board that only changes when it is edited.
     geom(sheet) {
       let g = this.cache.get(sheet);
-      if (g && g.ver === this.app.version) return g;
+      if (g && g.ver === this.app.version && g.ops === this.app.style.ops) return g;
       const defs = this.app.project.defs;
       const occ = G.occupancy(sheet, defs);
       const blocks = sheet.blocks.map((b) => ({ b, fp: G.footprint(b, defs) }));
@@ -261,6 +261,32 @@
           }
         }
       }
+      // Atoms drawn as vias or symbols have no leads of their own: each net's copper
+      // continues from the pin to the glyph as part of the net, so trace and lead
+      // are one stroke (no end cap or casing between them) at the net's width.
+      const ops = this.app.style.ops;
+      if (ops !== 'chip') {
+        for (const { b, fp } of blocks) {
+          const t = G.ATOMS[b.type];
+          if (!t) continue;
+          const R = ops === 'via' ? 0.42 : b.type === 'delay' ? 0.42 : 0.72;
+          const rot = ((b.rot || 0) & 3) * Math.PI / 2, cs = Math.cos(rot), sn = Math.sin(rot);
+          const cx = b.x + fp.w / 2, cy = b.y + fp.h / 2;
+          const S = ([lx, ly]) => { const u = lx - t.w / 2, v = ly - t.h / 2; return [cx + u * cs - v * sn, cy + u * sn + v * cs]; };
+          const mid = [t.w / 2, t.h / 2];
+          const lines = [...t.ins.map(([lx, ly]) => [[lx + 0.5, ly + 0.5], [mid[0] - R - 0.1, ly + 0.5], mid]),
+            ...t.outs.map(([lx, ly]) => [[lx + 0.5, ly + 0.5], mid])];
+          const pads = [...fp.pads.filter((q) => q.dir === 'in'), ...fp.pads.filter((q) => q.dir === 'out')];
+          pads.forEach((pad, i) => {
+            const rid = sheet.top[G.key(pad.x, pad.y)];
+            if (!rid || !traces.top.has(rid)) return;
+            const pts = lines[i].map(S), r = reach.get(G.TOP + ':' + G.key(pad.x, pad.y));
+            const add = (path) => { path.moveTo(pts[0][0], pts[0][1]); for (let j = 1; j < pts.length; j++) path.lineTo(pts[j][0], pts[j][1]); };
+            add(traces.top.get(rid));
+            add(taper.top.get(rid)[r === undefined ? TAPER_FLAT : taperBucket(r)]);
+          });
+        }
+      }
       const all = {};
       for (const layer of [G.TOP, G.BOT]) { all[layer] = new Path2D(); for (const p of traces[layer].values()) all[layer].addPath(p); }
       const vias = [];
@@ -277,7 +303,7 @@
       }
       for (const rid in sheet.regions) { const kb = sheet.regions[rid].knob; if (kb) anchors[rid] = [kb.x, kb.y]; }
       for (const { b, fp } of blocks) grow(b.x, b.y, fp.w, fp.h);
-      g = { ver: this.app.version, occ, blocks, traces, taper, reach, chevrons, junctions, driven: new Set(drivers.keys()), all, vias, pads, anchors,
+      g = { ver: this.app.version, ops: this.app.style.ops, occ, blocks, traces, taper, reach, chevrons, junctions, driven: new Set(drivers.keys()), all, vias, pads, anchors,
         bbox: x0 === Infinity ? null : { x0: x0 - 1, y0: y0 - 1, x1: x1 + 1, y1: y1 + 1 } };
       this.cache.set(sheet, g);
       return g;
@@ -375,8 +401,10 @@
       registers(G.BOT, wBot);
       strokeLayer(G.BOT, wBot, botActive ? 1 : 0.6);
 
-      // packages (and the boards inside composite ICs)
-      for (const { b, fp } of g.blocks) this.drawPackage(F, b, fp, px);
+      // packages (and the boards inside composite ICs); atoms drawn as glyphs come
+      // after the top layer, since their nets' copper runs underneath them
+      const glyphs = style.ops !== 'chip';
+      for (const { b, fp } of g.blocks) if (!(glyphs && G.ATOMS[b.type])) this.drawPackage(F, b, fp, px);
 
       // top layer: dark casing, then the coloured copper
       this.board(F);
@@ -391,6 +419,7 @@
       if (botActive) strokeLayer(G.BOT, wBot, 0.9);
       this.drawDirection(F, g, px, wTop, wBot, cap);
       this.drawJunctions(F, g, px, wTop, cap);
+      if (glyphs) { for (const { b, fp } of g.blocks) if (G.ATOMS[b.type]) this.drawPackage(F, b, fp, px); this.board(F); }
       if (sel && sel.run && sel.run.length) {
         ctx.lineWidth = wTop * 0.45; ctx.strokeStyle = '#ffffff';
         ctx.stroke(pathOf(sel.run.map(([, x, y]) => [x, y])));
@@ -511,22 +540,6 @@
       const mx = t.w / 2, my = t.h / 2;
       const lw = (w, maxPx) => Math.min(w, maxPx / px);
       const R = via ? 0.42 : b.type === 'delay' ? 0.42 : 0.72;
-      // The atom has no leads of its own: each net's copper continues from the pin
-      // into the via, at the width and colour the trace has at that pin.
-      const geo = this.geom(sh), taper = app.style.dir === 'taper';
-      const runs = [];
-      const run = (pts, pad) => {
-        const rid = sh.top[G.key(pad.x, pad.y)];
-        if (!rid) return;
-        const r = geo.reach.get(G.TOP + ':' + G.key(pad.x, pad.y));
-        runs.push({ pts, color: colorOf(app.valueOf(F.path + rid)), f: taper ? TAPER[r === undefined ? TAPER_FLAT : taperBucket(r)] : 1 });
-      };
-      t.ins.forEach(([lx, ly], i) => run([[lx + 0.5, ly + 0.5], [mx - R - 0.1, ly + 0.5], [mx, my]], ins[i]));
-      t.outs.forEach(([lx, ly], i) => run([[mx, my], [lx + 0.5, ly + 0.5]], outs[i]));
-      const strokeRun = (pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
-      ctx.strokeStyle = '#08090c';
-      for (const r of runs) { ctx.lineWidth = lw(W_CASE, 15) * r.f; strokeRun(r.pts); }
-      for (const r of runs) { ctx.strokeStyle = r.color; ctx.lineWidth = lw(W_TOP, 10) * r.f; strokeRun(r.pts); }
       const vout = outs[0] ? val(outs[0]) : undefined;
       const ring = outline || (via ? '#e8ebf2' : '#d9b36c');
       ctx.lineWidth = lw(outline ? 0.12 : 0.08, outline ? 3 : 2);
