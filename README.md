@@ -33,7 +33,30 @@ No build step and no dependencies. Either:
 Then press **▶ Start audio**. The default patch is a sequenced synth. To watch
 it tick instead, choose the **slow** clock and press **Step** (or Space).
 
-Tests: `node tests/test.js` (patch editor) and `node tests/grid.test.js` (board)
+Tests: `node tests/test.js` (patch editor), `node tests/grid.test.js` (board),
+`node tests/editor.test.js` (editing core) and `python3 tests/run-ui.py`
+(interactivity tests in headless Firefox; also runnable by opening
+`index.html?uitest=1`).
+
+## Editing
+
+- **Select (V):** drag on empty board to box-select. Click selects a block or a
+  trace; Shift-click adds or removes. Drag anything selected to move the whole
+  selection. Arrow keys nudge (Shift: 5 cells).
+- **Blocks drag their traces along:** each pin whose trace stays behind is
+  re-routed by the maze router. If one can't be, you're told.
+- **Undo / redo:** every gesture (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y), including
+  loading an example or importing a file.
+- **Copy, cut, paste, duplicate:** Ctrl+C / X / V / D. Blocks and traces go
+  together, keeping knobs, constants and per-instance values. The clipboard
+  survives reloads and works across tabs.
+- **Pan and zoom:** right-, middle- or Space-drag pans; the wheel zooms. F zooms
+  to the selection, H shows everything, Esc deselects or backs out.
+- **Palette search:** type to filter, Enter to place the first match.
+
+The editing core (`js/grid/editor.js`) has no DOM: selection, clipboard, moves,
+deletion and the undo history are plain functions over the project, which the
+page wires to pointer and key events.
 
 ## Sample stacks (WAV files)
 

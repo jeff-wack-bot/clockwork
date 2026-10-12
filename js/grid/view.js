@@ -347,7 +347,7 @@
       const g = this.geom(sh);
       const val = (rid) => app.valueOf(F.path + rid);
       const hot = app.hotRegion && app.hotRegion.path === F.path ? app.hotRegion.rid : null;
-      const sel = app.sel && app.sel.kind === 'region' && app.sel.path === F.path ? app.sel : null;
+      const sel = app.sel && app.sel.F.path === F.path && app.sel.F.sheet === sh ? app.sel : null;   // the selection, if it is on this board
       const botActive = app.layer === G.BOT;
       // trace widths are in board units, capped in pixels so an outer board's
       // traces don't swamp the inner board you have zoomed into
@@ -392,7 +392,7 @@
         ctx.globalAlpha = 1;
       };
       const highlight = (layer, width) => {
-        for (const [rid, color] of [[hot, 'rgba(255,255,255,0.55)'], [sel && sel.id, '#f0a640']]) {
+        for (const [rid, color] of [[hot, 'rgba(255,255,255,0.55)'], [sel && sel.region, '#f0a640']]) {
           const p = rid && g.traces[layer].get(rid);
           if (p) { ctx.lineWidth = width; ctx.strokeStyle = color; ctx.stroke(p); }
         }
@@ -420,9 +420,18 @@
       this.drawDirection(F, g, px, wTop, wBot, cap);
       this.drawJunctions(F, g, px, wTop, cap);
       if (glyphs) { for (const { b, fp } of g.blocks) if (G.ATOMS[b.type]) this.drawPackage(F, b, fp, px); this.board(F); }
-      if (sel && sel.run && sel.run.length) {
-        ctx.lineWidth = wTop * 0.45; ctx.strokeStyle = '#ffffff';
-        ctx.stroke(pathOf(sel.run.map(([, x, y]) => [x, y])));
+      if (sel && sel.cells.size) {
+        // selected trace cells: white, joined where neighbours are selected too
+        const paths = { top: new Path2D(), bot: new Path2D() };
+        for (const c of sel.cells) {
+          const [l, k] = c.split(':'), [x, y] = G.unkey(k), p = paths[l];
+          if (!p) continue;
+          p.moveTo(x + 0.5, y + 0.5); p.lineTo(x + 0.5, y + 0.5);
+          for (const [nx, ny] of [[x + 1, y], [x, y + 1]]) if (sel.cells.has(l + ':' + G.key(nx, ny)) && sh[l][G.key(nx, ny)] === sh[l][k]) { p.moveTo(x + 0.5, y + 0.5); p.lineTo(nx + 0.5, ny + 0.5); }
+        }
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = wBot * 0.6; ctx.stroke(paths.bot);
+        ctx.lineWidth = wTop * 0.5; ctx.stroke(paths.top);
       }
 
       // pads and vias
@@ -581,7 +590,7 @@
       const ctx = this.ctx, app = this.app, defs = app.project.defs;
       const a = this.toScreen(F.ox + b.x * F.sc, F.oy + b.y * F.sc), w = fp.w * px, h = fp.h * px;
       if (a.x > this.W || a.y > this.H || a.x + w < 0 || a.y + h < 0) return;
-      const selected = app.sel && app.sel.kind === 'block' && app.sel.path === F.path && app.sel.id === b.id;
+      const selected = !!(app.sel && app.sel.F.path === F.path && app.sel.F.sheet === F.sheet && app.sel.blocks.has(b.id));
       const problem = app.compiled && app.compiled.problemPaths.includes(F.path + b.id);
       const outline = problem ? '#ff6b6b' : selected ? '#f0a640' : null;
       this.board(F);
@@ -733,7 +742,46 @@
 
     // Placement ghost, the trace being routed, and the snap cursor.
     drawOverlay() {
-      const app = this.app, ctx = this.ctx, h = app.hover, r = app.route;
+      const app = this.app, ctx = this.ctx, h = app.hover, r = app.route, E = GW.Editor;
+      const rectOf = (F, x0, y0, x1, y1) => {   // cells (inclusive) of frame F, on screen
+        const a = this.toScreen(F.ox + Math.min(x0, x1) * F.sc, F.oy + Math.min(y0, y1) * F.sc);
+        const b = this.toScreen(F.ox + (Math.max(x0, x1) + 1) * F.sc, F.oy + (Math.max(y0, y1) + 1) * F.sc);
+        return [a.x, a.y, b.x - a.x, b.y - a.y];
+      };
+      // a dashed box around a selection of more than one thing
+      const sel = app.sel;
+      if (sel && E && E.count(sel) > 1 && !(app.drag && app.drag.kind === 'marquee')) {
+        const bb = E.bounds(sel.F, app.project.defs, sel);
+        if (bb) {
+          const [x, y, w, hh] = rectOf(sel.F, bb.x0, bb.y0, bb.x1, bb.y1);
+          ctx.setLineDash([5, 4]); ctx.strokeStyle = 'rgba(240,166,64,0.8)'; ctx.lineWidth = 1;
+          ctx.strokeRect(x - 3, y - 3, w + 6, hh + 6); ctx.setLineDash([]);
+        }
+      }
+      // the box being dragged out
+      const d = app.drag;
+      if (d && d.kind === 'marquee' && d.far) {
+        const [x, y, w, hh] = rectOf(d.F, d.x0, d.y0, d.x1, d.y1);
+        ctx.fillStyle = 'rgba(94,200,229,0.10)'; ctx.fillRect(x, y, w, hh);
+        ctx.strokeStyle = '#5ec8e5'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, hh - 1);
+      }
+      // what a paste would put down, green if it fits
+      if (app.pasting && h && E) {
+        const clip = app.pasting, o = app.pasteOrigin(h, clip);
+        const ok = !E.pasteProblem(app.project, h.F, clip, o.x, o.y);
+        ctx.fillStyle = ok ? 'rgba(111,220,140,0.22)' : 'rgba(255,80,80,0.25)';
+        ctx.strokeStyle = ok ? '#6fdc8c' : '#ff6b6b'; ctx.lineWidth = 1.5;
+        for (const b of clip.blocks) {
+          const fp = G.footprint(Object.assign({}, b, { x: b.x + o.x, y: b.y + o.y }), app.project.defs);
+          const [x, y, w, hh] = rectOf(h.F, b.x + o.x, b.y + o.y, b.x + o.x + fp.w - 1, b.y + o.y + fp.h - 1);
+          ctx.fillRect(x, y, w, hh); ctx.strokeRect(x, y, w, hh);
+        }
+        for (const [l, dx, dy] of clip.cells) {
+          const [x, y, w, hh] = rectOf(h.F, dx + o.x, dy + o.y, dx + o.x, dy + o.y);
+          const m = l === G.TOP ? 0.25 : 0.35;
+          ctx.fillRect(x + w * m, y + hh * m, w * (1 - 2 * m), hh * (1 - 2 * m));
+        }
+      }
       if (r && r.preview) {
         this.board(r.F);
         ctx.lineWidth = r.layer === G.TOP ? W_TOP : W_BOT;

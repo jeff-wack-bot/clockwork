@@ -1,7 +1,10 @@
-// Sample Factory application: tools, routing, knobs, sample stacks, inspector, persistence.
+// Sample Factory application: turns pointer, key and panel events into edits
+// (most of them in editor.js), and keeps the view, inspector and audio in step.
+// Every user gesture ends with app.commit(), which records an undo snapshot if
+// the project changed.
 (function () {
   'use strict';
-  const G = window.GW;
+  const G = window.GW, E = window.GW.Editor;
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const STORE = 'samplefactory.board.v1', OLD_STORE = 'clockwork.grid.v1';   // a Clockwork Board project still opens
@@ -10,7 +13,9 @@
   const app = {
     project: null, compiled: null, running: null, snap: null,
     version: 1, tool: 'select', layer: G.TOP,
-    sel: null, hover: null, hotRegion: null, placing: null, drag: null,
+    sel: null,            // Editor selection { F, blocks, cells, region }, or null
+    hover: null, hotRegion: null, placing: null, pasting: null, drag: null, route: null,
+    history: new E.History(200), clip: null,
   };
   window.gapp = app;
 
@@ -98,8 +103,8 @@
     app.host.addSample(e.id, e.data);
     app.missing.delete(e.id);
     Object.assign(b, { sample: e.id, name: e.name });
-    app.sel = { kind: 'block', path: F.path, id: b.id, F };
-    app.changed(); renderInspector();
+    selectBlock(F, b);
+    app.changed(); app.commit('load WAV'); renderInspector();
     const secs = e.data.length / G.FS;
     toast(`${e.name}: ${e.data.length.toLocaleString('en-US')} samples (${fmtTime(secs)}), one per tick.` +
       (e.stored ? '' : ' It could not be saved in this browser, so you will need to load it again after a reload.'), 6000);
@@ -136,6 +141,113 @@
   function regionValue(F, rid) {
     const ov = app.project.values[F.path + rid];
     return F.path !== '' && ov !== undefined ? ov : F.sheet.regions[rid].value;
+  }
+
+  // ---- selection -------------------------------------------------------------------
+  const sameFrame = (a, b) => !!(a && b && a.path === b.path && a.sheet === b.sheet);
+  function select(sel) {
+    app.sel = sel && (!E.isEmpty(sel) || sel.region) ? sel : null;
+    renderInspector(); updateToolbar(); app.view.dirty = true;
+  }
+  function selectBlock(F, b) { const s = E.emptySelection(F); s.blocks.add(b.id); select(s); }
+  // The one block selected, if exactly one block (and nothing else) is.
+  function selBlock() {
+    const s = app.sel;
+    if (!s || s.blocks.size !== 1 || s.cells.size) return null;
+    const b = s.F.sheet.blocks.find((x) => x.id === [...s.blocks][0]);
+    return b ? { F: s.F, b } : null;
+  }
+  // The net shown in the inspector after clicking a trace.
+  function selRegion() {
+    const s = app.sel;
+    return s && s.region && !s.blocks.size && s.F.sheet.regions[s.region] ? { F: s.F, rid: s.region } : null;
+  }
+  // The board that keyboard commands apply to: the selection's, else the one under the pointer.
+  const activeFrame = () => (app.sel ? app.sel.F : app.hover && isLive(app.hover.F) ? app.hover.F : app.view.rootFrame());
+  // Is this frame's board still part of the project (not left over from before an undo or a load)?
+  const isLive = (F) => F.sheet === app.project.root || Object.values(app.project.defs).includes(F.sheet);
+
+  // ---- undo --------------------------------------------------------------------------
+  app.commit = (label) => {
+    if (app.project && app.history.record(JSON.stringify(app.project), label)) updateToolbar();
+  };
+  function restore(r, verb) {
+    if (!r) { toast(`Nothing to ${verb.toLowerCase()}.`); return; }
+    app.project = JSON.parse(r.state);
+    app.sel = null; app.route = null; app.placing = null; app.pasting = null; app.drag = null; app.hover = null; app.hotRegion = null;
+    app.version++; app.changed(); updatePalette(); renderInspector(); updateToolbar();
+    toast(`${verb}: ${r.label}`, 1800);
+  }
+  app.undo = () => restore(app.history.undo(), 'Undo');
+  app.redo = () => restore(app.history.redo(), 'Redo');
+
+  // ---- clipboard ---------------------------------------------------------------------
+  // Kept in memory and in localStorage, so it survives a reload and works across tabs.
+  const CLIP_KEY = 'samplefactory.clipboard';
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  function describe(sel) {
+    const parts = [];
+    if (sel.blocks.size) parts.push(plural(sel.blocks.size, 'block'));
+    if (sel.cells.size) parts.push(plural(sel.cells.size, 'trace cell'));
+    return parts.join(' and ');
+  }
+  function copySelection(cut) {
+    const s = app.sel;
+    if (E.isEmpty(s)) { toast('Nothing selected.'); return; }
+    app.clip = E.copy(app.project, s.F, s);
+    try { localStorage.setItem(CLIP_KEY, JSON.stringify(app.clip)); } catch (err) { /* memory only */ }
+    if (cut) {
+      E.remove(app.project, s.F, s);
+      select(null); app.changed(); app.commit('cut ' + describe(s));
+    }
+    toast(`${cut ? 'Cut' : 'Copied'} ${describe(s)}.`, 1800);
+  }
+  function clipboard() {
+    if (app.clip) return app.clip;
+    try { const c = JSON.parse(localStorage.getItem(CLIP_KEY)); if (c && c.kind === 'samplefactory.clip') return c; } catch (err) { /* none */ }
+    return null;
+  }
+  function startPaste() {
+    const clip = clipboard();
+    if (!clip) { toast('The clipboard is empty: select something and press Ctrl+C.'); return; }
+    app.pasting = clip; app.placing = null; app.route = null;
+    updateToolbar(); app.view.dirty = true;
+    toast('Click to paste (Shift-click to paste again), Esc to cancel.');
+  }
+  app.pasteOrigin = (h, clip) => ({ x: h.x - Math.floor((clip.w - 1) / 2), y: h.y - Math.floor((clip.h - 1) / 2) });
+  function pasteAt(h, keep) {
+    const clip = app.pasting, o = app.pasteOrigin(h, clip);
+    const r = E.paste(app.project, h.F, clip, o.x, o.y);
+    if (r.error) { toast(r.error); return; }
+    if (!keep) app.pasting = null;
+    select(r.sel); app.changed(); app.commit('paste');
+  }
+  // Duplicate: paste a copy right next to the selection if there is room, else let the user place it.
+  function duplicate() {
+    const s = app.sel;
+    if (E.isEmpty(s)) { toast('Nothing selected.'); return; }
+    const clip = E.copy(app.project, s.F, s), bb = E.bounds(s.F, app.project.defs, s);
+    for (const [dx, dy] of [[0, clip.h + 1], [clip.w + 1, 0], [0, -clip.h - 1], [-clip.w - 1, 0], [2, 2]]) {
+      if (!E.pasteProblem(app.project, s.F, clip, bb.x0 + dx, bb.y0 + dy)) {
+        const r = E.paste(app.project, s.F, clip, bb.x0 + dx, bb.y0 + dy);
+        select(r.sel); app.changed(); app.commit('duplicate ' + describe(s));
+        return;
+      }
+    }
+    app.clip = clip; startPaste();
+  }
+  function nudge(dx, dy) {
+    const s = app.sel;
+    if (E.isEmpty(s)) return;
+    const r = E.rubberMove(app.project, s.F, s, E.snapshot(s.F.sheet), dx, dy);
+    if (!r) { toast('Something is in the way.', 1500); return; }
+    select(r.sel); app.version++; app.changed(); app.commit('move ' + describe(r.sel));
+    if (r.unconnected.length) toast(`${plural(r.unconnected.length, 'pin')} could not be routed back.`, 3000);
+  }
+  function selectAll() {
+    const F = activeFrame();
+    select(E.selectAll(F, app.project.defs));
+    toast(`Selected ${describe(app.sel || E.emptySelection(F)) || 'nothing'}.`, 1500);
   }
 
   // ---- pointer ------------------------------------------------------------------
@@ -177,41 +289,61 @@
       const ghost = Object.assign({ type: 'sample', rot: 0, loop: true }, { x: h.x - 5, y: h.y - 1 });
       if (!G.canPlace(h.F.sheet, app.project.defs, ghost)) { toast('No room for a Sample block there (10×3 cells).'); return; }
       b = G.addBlock(h.F.sheet, app.project.defs, ghost);
+      app.changed(); app.commit('place Sample');
     }
     loadWavInto(h.F, b, f);
   });
+  // Select tool: drag on empty board to box-select, click to select (Shift adds or
+  // removes), drag a selected item to move the whole selection, drag a knob to turn
+  // it. Right-, middle- or Space-drag pans in every tool; the wheel zooms.
   canvas.addEventListener('pointerdown', (e) => {
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
     const p = pos(e), h = app.view.locate(p.x, p.y);
-    if (e.button === 1 || spaceDown || !h) { app.drag = { kind: 'pan', x: p.x, y: p.y }; return; }
-    if (e.button === 2 || app.tool === 'erase') { app.drag = { kind: 'erase', F: h.F, last: null, both: e.shiftKey }; eraseTo(h); return; }
+    if (e.button === 1 || e.button === 2 || spaceDown || !h) { app.drag = { kind: 'pan', x: p.x, y: p.y }; setCursor(); return; }
     if (e.button !== 0) return;
+    if (app.pasting) { pasteAt(h, e.shiftKey); return; }
     if (app.placing) { placeAt(h, e.shiftKey); return; }
+    if (app.tool === 'erase') { app.drag = { kind: 'erase', F: h.F, last: null, both: e.shiftKey }; eraseTo(h); return; }
     if (app.tool === 'route') { app.route ? routeCommit(h) : routeStart(h); return; }
     if (app.tool === 'knob') { toggleKnob(h); return; }
-    // select tool: knob → turn it; block → move it; region → select it; else pan
     const krid = knobAt(h);
     if (krid) {
       const st = app.knobState(h.F.path + krid);
-      if (st !== 'ok') { toast(st === 'written' ? 'This register is written by a block, so its handle is dead.' : 'This knob is overridden by a register outside the block.'); return; }
+      if (st !== 'ok') { toast(st === 'written' ? 'This net is written by a block, so its handle is dead.' : 'This knob is overridden by a net outside the block.'); return; }
       const kb = h.F.sheet.regions[krid].knob;
       app.drag = { kind: 'knob', F: h.F, rid: krid, frac: GW.knobFrac(kb, regionValue(h.F, krid)), y: p.y };
       return;
     }
-    if (h.occ && h.occ.block) {
-      const b = h.occ.block;
-      app.sel = { kind: 'block', path: h.F.path, id: b.id, F: h.F };
-      app.drag = { kind: 'move', F: h.F, b, x0: b.x, y0: b.y, hx: h.x, hy: h.y, moved: false };
-      renderInspector(); app.view.dirty = true;
+    const b = h.occ && h.occ.block, r = !b && regionAt(h);
+    if (b || r) {
+      const cur = app.sel && sameFrame(app.sel.F, h.F) ? app.sel : null;
+      const track = r ? E.trackAt(h.F.sheet, app.project.defs, r.layer, h.x, h.y).map(([l, x, y]) => E.ck(l, x, y)) : [];
+      const inSel = cur && (b ? cur.blocks.has(b.id) : cur.cells.has(E.ck(r.layer, h.x, h.y)));
+      if (e.shiftKey && cur) {                         // add to, or take from, the selection
+        if (b) { inSel ? cur.blocks.delete(b.id) : cur.blocks.add(b.id); }
+        else for (const c of track) inSel ? cur.cells.delete(c) : cur.cells.add(c);
+        if (r && !inSel) cur.region = r.rid;
+        select(cur);
+        return;
+      }
+      if (!inSel) {
+        const s = E.emptySelection(h.F);
+        if (b) s.blocks.add(b.id); else { track.forEach((c) => s.cells.add(c)); s.region = r.rid; }
+        select(s);
+      } else if (r && app.sel.region !== r.rid) { app.sel.region = r.rid; renderInspector(); }
+      app.drag = { kind: 'move', F: h.F, hx: h.x, hy: h.y, dx: 0, dy: 0, moved: false, sel0: app.sel, snap: E.snapshot(h.F.sheet), unconnected: [] };
+      setCursor();
       return;
     }
-    const r = regionAt(h);
-    if (r) {
-      app.sel = { kind: 'region', path: h.F.path, id: r.rid, F: h.F, run: trackAt(h.F.sheet, r.layer, h.x, h.y) };
-      renderInspector(); app.view.dirty = true; return;
-    }
-    app.drag = { kind: 'pan', x: p.x, y: p.y, click: true, sx: p.x, sy: p.y };
+    app.drag = { kind: 'marquee', F: h.F, x0: h.x, y0: h.y, x1: h.x, y1: h.y, add: e.shiftKey, sx: p.x, sy: p.y, far: false };
   });
+
+  // Board coordinates of a screen point in a given frame, even when the pointer has
+  // wandered into a deeper (or shallower) board.
+  function cellIn(F, p) {
+    const w = app.view.toWorld(p.x, p.y);
+    return { x: Math.floor((w.x - F.ox) / F.sc), y: Math.floor((w.y - F.oy) / F.sc) };
+  }
 
   canvas.addEventListener('pointermove', (e) => {
     const p = pos(e), d = app.drag;
@@ -226,28 +358,69 @@
       d.y = p.y;
       setRegionValue(d.F, d.rid, GW.knobValue(kb, d.frac));
     }
-    if (d && d.kind === 'move' && h && h.F.sheet === d.F.sheet && h.F.path === d.F.path) {
-      const nx = d.x0 + h.x - d.hx, ny = d.y0 + h.y - d.hy;
-      if (nx !== d.b.x || ny !== d.b.y) {
-        const trial = Object.assign({}, d.b, { x: nx, y: ny });
-        if (G.canPlace(d.F.sheet, app.project.defs, trial, d.b)) { d.b.x = nx; d.b.y = ny; d.moved = true; app.version++; }
+    if (d && d.kind === 'move' && app.sel) {
+      // Always from the board as it was at the start of the drag; blocks drag their
+      // traces along (rubber-banding). Try the whole offset, then each axis alone,
+      // so the selection slides along obstacles.
+      const c = cellIn(d.F, p), wx = c.x - d.hx, wy = c.y - d.hy;
+      if (wx !== d.dx || wy !== d.dy) {
+        let done = false;
+        for (const [ox, oy] of [[wx, wy], [wx, d.dy], [d.dx, wy]]) {
+          if (ox === d.dx && oy === d.dy) continue;
+          const r = E.rubberMove(app.project, d.F, d.sel0, d.snap, ox, oy);
+          if (r) { app.sel = r.sel; d.dx = ox; d.dy = oy; d.unconnected = r.unconnected; d.moved = true; done = true; break; }
+        }
+        if (!done) { const r = E.rubberMove(app.project, d.F, d.sel0, d.snap, d.dx, d.dy); if (r) app.sel = r.sel; d.blocked = true; }
+        app.version++;
       }
+    }
+    if (d && d.kind === 'marquee') {
+      const c = cellIn(d.F, p);
+      d.x1 = c.x; d.y1 = c.y;
+      if (Math.hypot(p.x - d.sx, p.y - d.sy) > 4) d.far = true;
     }
     const r = h && regionAt(h);
     app.hotRegion = r ? { path: h.F.path, rid: r.rid } : null;
+    if (!d) setCursor(h);
     updateStatus();
     app.view.dirty = true;
   });
 
-  canvas.addEventListener('pointerup', (e) => {
+  canvas.addEventListener('pointerup', () => {
     const d = app.drag;
     app.drag = null;
+    setCursor(app.hover);
     if (!d) return;
-    if (d.kind === 'pan' && d.click && Math.hypot(pos(e).x - d.sx, pos(e).y - d.sy) < 3) { app.sel = null; renderInspector(); }
-    if (d.kind === 'move' && d.moved) app.changed();
-    if (d.kind === 'erase') app.changed();
+    if (d.kind === 'marquee') {
+      if (!d.far) { if (!d.add) select(null); }       // a click on empty board
+      else {
+        const base = d.add && app.sel && sameFrame(app.sel.F, d.F) ? app.sel : null;
+        select(E.selectRect(d.F, app.project.defs, d, base));
+      }
+    }
+    if (d.kind === 'move' && d.moved && (d.dx || d.dy)) {
+      app.changed(); app.commit('move ' + describe(app.sel)); renderInspector();
+      if (d.unconnected.length) toast(`${plural(d.unconnected.length, 'pin')} could not be routed back to ${d.unconnected.length === 1 ? 'its net' : 'their nets'}: route ${d.unconnected.length === 1 ? 'it' : 'them'} by hand (W).`, 5000);
+    } else if (d.kind === 'move' && d.blocked && !d.moved) toast('Something is in the way.', 1500);
+    if (d.kind === 'erase') { app.changed(); app.commit('erase'); }
+    if (d.kind === 'knob') app.commit('turn knob');
     app.view.dirty = true;
   });
+  canvas.addEventListener('pointerleave', () => { if (!app.drag) { app.hover = null; app.hotRegion = null; app.view.dirty = true; updateStatus(); } });
+
+  // Cursor feedback: what a click here would do.
+  function setCursor(h) {
+    let c = 'default';
+    const d = app.drag;
+    if (d) c = d.kind === 'pan' ? 'grabbing' : d.kind === 'move' ? 'move' : d.kind === 'knob' ? 'ns-resize' : 'crosshair';
+    else if (spaceDown) c = 'grab';
+    else if (app.placing || app.pasting || app.tool === 'route' || app.tool === 'erase') c = 'crosshair';
+    else if (app.tool === 'knob') c = 'cell';
+    else if (h && knobAt(h)) c = 'ns-resize';
+    else if (h && h.occ && h.occ.block) c = 'move';
+    else if (h && regionAt(h)) c = 'pointer';
+    canvas.style.cursor = c;
+  }
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -266,7 +439,7 @@
     if (krid && app.knobState(h.F.path + krid) === 'ok') {
       const kb = h.F.sheet.regions[krid].knob;
       const s = prompt(`Value for "${kb.label || krid}" (${kb.min} … ${kb.max})`, regionValue(h.F, krid));
-      if (s !== null && Number.isFinite(Number(s))) setRegionValue(h.F, krid, Number(s));
+      if (s !== null && Number.isFinite(Number(s))) { setRegionValue(h.F, krid, Number(s)); app.commit('set knob'); }
     }
   });
   function zoomToBlock(F, b) {
@@ -332,36 +505,12 @@
     const blocked = r.preview.good < r.preview.cells.length - 1;
     const connected = cells.length > 1 && ((endsOn && endsOn !== r.rid) || endPad);
     r.last = [ex, ey];
-    app.version++; app.changed();
+    app.version++; app.changed(); app.commit('route');
     if (blocked) toast('Something is in the way. Go around it, or press Tab to drop a via and pass under on the other layer.');
     else if (connected || cells.length === 1) endRoute();
     else routePreview(h);
   }
   function endRoute() { app.route = null; app.view.dirty = true; }
-
-  // The track under a click: the chain of trace cells between junctions, pins and vias.
-  function trackAt(sh, layer, x, y) {
-    const rid = sh[layer][G.key(x, y)];
-    if (!rid) return [];
-    const occ = app.view.geom(sh).occ;
-    const nbrs = (cx, cy) => [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]].filter(([a, b]) => sh[layer][G.key(a, b)] === rid);
-    const node = (cx, cy) => { const k = G.key(cx, cy); return occ.has(k) || (sh.top[k] && sh.top[k] === sh.bot[k]) || nbrs(cx, cy).length > 2; };
-    if (node(x, y)) return [[layer, x, y]];
-    const seen = new Set([G.key(x, y)]);
-    const walk = ([cx, cy]) => {
-      const out = [];
-      while (!seen.has(G.key(cx, cy)) && !node(cx, cy)) {
-        seen.add(G.key(cx, cy)); out.push([layer, cx, cy]);
-        const next = nbrs(cx, cy).find(([a, b]) => !seen.has(G.key(a, b)));
-        if (!next) break;
-        [cx, cy] = next;
-      }
-      return out;
-    };
-    const [a, b] = nbrs(x, y);
-    const left = a ? walk(a) : [], right = b ? walk(b) : [];
-    return left.reverse().concat([[layer, x, y]], right);
-  }
 
   function eraseTo(h) {
     const d = app.drag;
@@ -387,7 +536,7 @@
       if (!r.rid) { r.rid = G.newRegion(sh); G.paint(sh, occ, r.layer, x, y, r.rid); }
       G.paint(sh, occ, next, x, y, r.rid);
       r.layer = next;
-      app.version++; app.changed();
+      app.version++; app.changed(); app.commit('via');
     }
     app.layer = next;
     updateToolbar(); app.view.dirty = true;
@@ -397,12 +546,12 @@
     const r = regionAt(h);
     if (!r) { toast('Click a region to give it a handle.'); return; }
     const reg = h.F.sheet.regions[r.rid];
-    if (reg.knob) { delete reg.knob; app.changed(false); app.version++; return; }
+    if (reg.knob) { delete reg.knob; app.changed(false); app.version++; app.commit('remove handle'); return; }
     if (written(h.F.path + r.rid)) { toast('This register is written by a block. Only unwritten registers can have handles.'); return; }
     const v = regionValue(h.F, r.rid);
     reg.knob = { x: h.x, y: h.y, label: '', min: v < 0 ? 2 * v : 0, max: v > 0 ? 2 * v : (v < 0 ? 0 : 1), scale: 'lin' };
-    app.sel = { kind: 'region', path: h.F.path, id: r.rid, F: h.F };
-    app.version++; app.changed();
+    const s = E.emptySelection(h.F); s.region = r.rid; select(s);
+    app.version++; app.changed(); app.commit('add handle');
   }
 
   function placeAt(h, keep) {
@@ -413,68 +562,101 @@
     if (!G.canPlace(h.F.sheet, app.project.defs, b)) { toast('No room: an IC can only sit where traces touch its pins.'); return; }
     const nb = G.addBlock(h.F.sheet, app.project.defs, { type: b.type, def: b.def, x: b.x, y: b.y, rot: b.rot,
       window: b.type === 'scope' ? 512 : undefined, loop: b.type === 'sample' ? true : undefined });
-    app.sel = { kind: 'block', path: h.F.path, id: nb.id, F: h.F };
+    selectBlock(h.F, nb);
     if (nb.type === 'sample') pickWav(h.F, nb);
     if (!keep) app.placing = null;
-    updatePalette(); app.changed();
+    updatePalette(); app.changed(); app.commit('place ' + (nb.def || G.info(nb.type).title));
   }
 
-  // Delete removes the selected block, or the selected track; with Shift, the whole net.
+  // Delete removes the selection; with Shift, a clicked trace's whole net.
   function deleteSelection(wholeNet) {
     const s = app.sel;
     if (!s) return;
-    if (s.kind === 'block') s.F.sheet.blocks = s.F.sheet.blocks.filter((b) => b.id !== s.id);
-    else if (!wholeNet && s.run && s.run.length) for (const [l, x, y] of s.run) G.erase(s.F.sheet, l, x, y);
-    else G.removeRegion(s.F.sheet, s.id);
-    app.sel = null; app.changed(); renderInspector();
+    const reg = selRegion();
+    if (wholeNet && reg) { G.removeRegion(s.F.sheet, reg.rid); select(null); app.changed(); app.commit('delete net'); return; }
+    if (E.isEmpty(s)) return;
+    E.remove(app.project, s.F, s);
+    select(null); app.changed(); app.commit('delete ' + describe(s));
   }
   function rotate() {
     if (app.placing) { if (app.placing.type !== 'comp') app.placing.rot = ((app.placing.rot || 0) + 1) & 3; app.view.dirty = true; return; }
-    const s = app.sel;
-    if (!s || s.kind !== 'block') return;
-    const b = s.F.sheet.blocks.find((x) => x.id === s.id);
-    if (!b || b.type === 'comp') { toast('Composite blocks cannot be rotated in this prototype.'); return; }
+    const one = selBlock();
+    if (!one) { if (app.sel) toast('Select a single atom to rotate it.'); return; }
+    const { F, b } = one;
+    if (b.type === 'comp') { toast('Composite blocks cannot be rotated.'); return; }
     const trial = Object.assign({}, b, { rot: ((b.rot || 0) + 1) & 3 });
-    if (!G.canPlace(s.F.sheet, app.project.defs, trial, b)) { toast('No room to rotate here.'); return; }
-    b.rot = trial.rot; app.changed();
+    if (!G.canPlace(F.sheet, app.project.defs, trial, b)) { toast('No room to rotate here.'); return; }
+    b.rot = trial.rot; app.changed(); app.commit('rotate');
   }
 
   // ---- keyboard -----------------------------------------------------------------
+  const typing = () => ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.querySelector('dialog[open]');
   window.addEventListener('keydown', (e) => {
-    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.querySelector('dialog[open]')) return;
-    const k = e.key.toLowerCase();
+    if (typing()) return;
+    const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+    const ARROWS = { arrowleft: [-1, 0], arrowright: [1, 0], arrowup: [0, -1], arrowdown: [0, 1] };
+    if (mod) {
+      const act = { z: e.shiftKey ? app.redo : app.undo, y: app.redo, c: () => copySelection(false), x: () => copySelection(true),
+        v: startPaste, d: duplicate, a: selectAll }[k];
+      if (act) { e.preventDefault(); act(); }
+      return;
+    }
+    if (ARROWS[k] && app.sel) { e.preventDefault(); const [dx, dy] = ARROWS[k], n = e.shiftKey ? 5 : 1; nudge(dx * n, dy * n); return; }
     if (e.key === 'Tab') { e.preventDefault(); toggleLayer(); }
-    else if (e.key === ' ') { e.preventDefault(); spaceDown = true; }
+    else if (e.key === ' ') { e.preventDefault(); spaceDown = true; setCursor(app.hover); }
     else if (e.key === 'Escape') {
       if (app.route) endRoute();
-      else if (app.placing) { app.placing = null; updatePalette(); }
+      else if (app.pasting) { app.pasting = null; updateToolbar(); }
+      else if (app.placing) { app.placing = null; updatePalette(); updateToolbar(); }
+      else if (app.sel) select(null);
       else zoomOut();
-      app.view.dirty = true;
+      setCursor(app.hover); app.view.dirty = true;
     }
     else if (e.key === 'Enter' && app.route) endRoute();
     else if (e.key === '/' && app.route) { app.route.hFirst = !app.route.hFirst; if (app.hover) routePreview(app.hover); }
     else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(e.shiftKey); }
+    else if (e.key === '?') $('#help-dlg').showModal();
     else if (k === 'v') setTool('select');
     else if (k === 'w' || k === 'x') setTool('route');
     else if (k === 'e') setTool('erase');
     else if (k === 'k') setTool('knob');
     else if (k === 'r') rotate();
     else if (k === 'z') zoomOut();
+    else if (k === 'f' && app.sel) zoomToSelection();
     else if (k === 'h' || e.key === 'Home') app.view.fitAll();
     else if (k === '.') { app.host.setRunning(false); app.host.step(); updateClock(); }
   });
-  window.addEventListener('keyup', (e) => { if (e.key === ' ') spaceDown = false; });
+  window.addEventListener('keyup', (e) => { if (e.key === ' ') { spaceDown = false; setCursor(app.hover); } });
+  function zoomToSelection() {
+    const s = app.sel, bb = s && E.bounds(s.F, app.project.defs, s);
+    if (!bb) return;
+    const F = s.F;
+    app.view.fitRect(F.ox + bb.x0 * F.sc, F.oy + bb.y0 * F.sc, F.ox + (bb.x1 + 1) * F.sc, F.oy + (bb.y1 + 1) * F.sc, 0.2);
+  }
 
   // ---- toolbar ---------------------------------------------------------------------
-  function setTool(t) { app.tool = t; app.placing = null; app.route = null; updateToolbar(); updatePalette(); app.view.dirty = true; }
+  function setTool(t) { app.tool = t; app.placing = null; app.pasting = null; app.route = null; updateToolbar(); updatePalette(); app.view.dirty = true; }
   function updateToolbar() {
-    document.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === app.tool && !app.placing));
-    $('#btn-layer').textContent = app.layer === G.TOP ? 'Layer: top' : 'Layer: bottom';
+    document.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === app.tool && !app.placing && !app.pasting));
+    $('#btn-layer').textContent = app.layer === G.TOP ? 'Top' : 'Bottom';
     $('#btn-layer').classList.toggle('bot', app.layer === G.BOT);
-    canvas.style.cursor = app.tool === 'route' || app.tool === 'erase' || app.placing ? 'crosshair' : 'default';
+    const h = app.history;
+    $('#btn-undo').disabled = !h.canUndo; $('#btn-undo').title = h.canUndo ? `Undo ${h.undoLabel} (Ctrl+Z)` : 'Nothing to undo';
+    $('#btn-redo').disabled = !h.canRedo; $('#btn-redo').title = h.canRedo ? `Redo ${h.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo';
+    const has = !!app.sel && !E.isEmpty(app.sel);
+    for (const id of ['#btn-copy', '#btn-cut', '#btn-dup', '#btn-del']) $(id).disabled = !has;
+    setCursor(app.hover);
+    updateStatus();
   }
   document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
   $('#btn-layer').addEventListener('click', toggleLayer);
+  $('#btn-undo').addEventListener('click', () => app.undo());
+  $('#btn-redo').addEventListener('click', () => app.redo());
+  $('#btn-copy').addEventListener('click', () => copySelection(false));
+  $('#btn-cut').addEventListener('click', () => copySelection(true));
+  $('#btn-paste').addEventListener('click', startPaste);
+  $('#btn-dup').addEventListener('click', duplicate);
+  $('#btn-del').addEventListener('click', () => deleteSelection(false));
 
   // The single clock slider: log scale from 0.5 Hz up to real time.
   const rateFrom = (x) => (x >= 0.999 ? RATE_MAX : RATE_MIN * Math.pow(RATE_MAX / RATE_MIN, x));
@@ -487,8 +669,10 @@
   }
   function updateClock() {
     const h = app.host;
-    $('#rate-label').textContent = rateLabel(h.rate);
-    $('#btn-run').textContent = h.running ? 'Pause' : 'Run';
+    $('#rate-label').textContent = rateLabel(h.rate).split(' · ')[0];
+    $('#rate-label').title = rateLabel(h.rate);
+    $('#btn-run').textContent = h.running ? '⏸' : '▶';
+    $('#btn-run').title = h.running ? 'Pause the clock' : 'Run the clock';
     $('#btn-audio').textContent = h.audioOn ? '■ DAC on' : '▶ Start audio';
     $('#btn-audio').classList.toggle('on', h.audioOn);
   }
@@ -504,8 +688,11 @@
   function setRate(r) { app.host.setRate(r); $('#rate').value = sliderFrom(r); updateClock(); }
 
   // ---- palette ---------------------------------------------------------------------
+  let paletteFilter = '';
   function updatePalette() {
+    const q = paletteFilter.trim().toLowerCase();
     const item = (kind, type, sym, title, tip) => {
+      if (q && !(title + ' ' + tip).toLowerCase().includes(q)) return '';
       const on = app.placing && app.placing.type === (kind === 'def' ? 'comp' : type) && (kind !== 'def' || app.placing.def === type);
       return `<div class="pitem${on ? ' on' : ''}" data-place="${kind}:${esc(type)}" title="${esc(tip)}"><span class="psym">${esc(sym)}</span><span>${esc(title)}</span></div>`;
     };
@@ -519,14 +706,23 @@
     for (const n of Object.keys(app.project.defs).sort()) s += item('def', n, '▣', n, app.project.defs[n].description || '');
     s += '<div class="pbuttons"><button id="btn-newdef">+ New block</button></div>';
     s += '<p class="dim small">A constant is a net nobody writes. Route a short trace from an input pin, then give it a handle with the knob tool (K).</p>';
-    $('#palette').innerHTML = s;
+    // drop headings whose section is empty after filtering
+    s = s.replace(/<h3>[^<]*<\/h3>(?=<h3>|<div class="pbuttons">)/g, '');
+    $('#palette-list').innerHTML = s;
   }
-  $('#palette').addEventListener('click', (e) => {
+  $('#palette-search').addEventListener('input', (e) => { paletteFilter = e.target.value; updatePalette(); });
+  $('#palette-search').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.target.value = ''; paletteFilter = ''; updatePalette(); e.target.blur(); }
+    if (e.key === 'Enter') { const first = $('#palette-list [data-place]'); if (first) first.click(); e.target.blur(); }
+  });
+  $('#palette-list').addEventListener('click', (e) => {
     if (e.target.id === 'btn-newdef') return newDefinition();
     const it = e.target.closest('[data-place]');
     if (!it) return;
     const [kind, name] = it.dataset.place.split(':');
     app.placing = kind === 'def' ? { type: 'comp', def: name } : { type: name, rot: 0 };
+    app.pasting = null;
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     updatePalette(); updateToolbar();
     toast('Click to place, R to rotate, Shift-click to place several, Esc to cancel.');
   });
@@ -536,7 +732,7 @@
     if (app.project.defs[name]) { toast(`"${name}" already exists.`); return; }
     app.project.defs[name] = G.makeDef(name, 4, 3, 8, [{ dir: 'in', row: 1, name: 'in' }, { dir: 'out', row: 1, name: 'out' }], '');
     app.placing = { type: 'comp', def: name };
-    app.changed(); updatePalette(); updateToolbar();
+    app.changed(); app.commit('new block ' + name); updatePalette(); updateToolbar();
     toast(`Place your "${name}" somewhere, then zoom into it to build its insides.`);
   }
 
@@ -544,13 +740,22 @@
   function renderInspector() {
     const el = $('#inspector');
     if (el.contains(document.activeElement) && document.activeElement !== document.body) return;
-    const s = app.sel;
-    if (s && s.kind === 'block') {
-      const b = s.F.sheet.blocks.find((x) => x.id === s.id);
-      if (b) { el.innerHTML = blockHtml(s.F, b); return; }
-    }
-    if (s && s.kind === 'region' && s.F.sheet.regions[s.id]) { el.innerHTML = regionHtml(s.F, s.id); return; }
-    el.innerHTML = reportHtml();
+    const one = selBlock(), reg = selRegion();
+    if (one) el.innerHTML = blockHtml(one.F, one.b);
+    else if (reg) el.innerHTML = regionHtml(reg.F, reg.rid);
+    else if (app.sel && !E.isEmpty(app.sel)) el.innerHTML = multiHtml(app.sel);
+    else el.innerHTML = reportHtml();
+  }
+  function multiHtml(sel) {
+    const types = {};
+    for (const b of sel.F.sheet.blocks) if (sel.blocks.has(b.id)) { const n = b.type === 'comp' ? b.def : G.info(b.type).title; types[n] = (types[n] || 0) + 1; }
+    const nets = new Set();
+    for (const c of sel.cells) { const [l, x, y] = E.unck(c), rid = sel.F.sheet[l][G.key(x, y)]; if (rid) nets.add(rid); }
+    let h = `<h2>${describe(sel)}</h2><p class="dim small">${where(sel.F)}${nets.size ? ` · traces from ${plural(nets.size, 'net')}` : ''}</p>`;
+    if (Object.keys(types).length) h += '<table class="res">' + Object.entries(types).sort().map(([n, c]) => `<tr><td>${esc(n)}</td><td>${c}</td></tr>`).join('') + '</table>';
+    h += `<p class="btnrow"><button data-act="copy">Copy</button> <button data-act="cut">Cut</button> <button data-act="dup">Duplicate</button> <button data-act="delete" class="danger">Delete</button></p>
+      <p class="dim small">Drag any selected item to move them all, or use the arrow keys (Shift: 5 cells). Shift-click adds or removes items; F zooms to the selection.</p>`;
+    return h;
   }
   const field = (label, prop, value, type, extra) =>
     `<label class="field"><span>${label}</span><input data-prop="${prop}" type="${type || 'text'}" value="${esc(value === undefined ? '' : value)}" ${extra || ''}></label>`;
@@ -634,7 +839,7 @@
       for (const k of Object.keys(app.project.values)) if (k.startsWith(prefix)) delete app.project.values[k];
     }
     if (document.activeElement) document.activeElement.blur();
-    app.changed(); renderInspector();
+    app.changed(); app.commit('swap chip'); renderInspector();
     toast(`Swapped ${all ? 'every ' + old : old} for ${name}.`);
   }
 
@@ -663,7 +868,7 @@
       h += `<label class="field"><span>Scale</span><select data-prop="knob.scale">${['lin', 'log'].map((x) => `<option ${k.scale === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>`;
       h += '<p><button data-act="rmknob">Remove handle</button></p>';
     } else if (!w) h += '<p class="dim small">Use the knob tool (K) on one of its cells to give it a handle.</p>';
-    if (app.sel && app.sel.run && app.sel.run.length) h += `<p class="dim small">Selected track: ${app.sel.run.length} cell(s), shown white. Delete removes it; Shift+Delete removes the whole net.</p>`;
+    if (app.sel && app.sel.cells.size) h += `<p class="dim small">Selected: ${plural(app.sel.cells.size, 'trace cell')}, shown white. Delete removes them; Shift+Delete removes the whole net. Drag to move them.</p>`;
     h += '<p><button data-act="delete" class="danger">Delete track</button> <button data-act="deletenet" class="danger">Delete net</button></p>';
     return h;
   }
@@ -693,14 +898,17 @@
   }
 
   $('#inspector').addEventListener('click', (e) => {
-    const act = e.target.dataset && e.target.dataset.act, s = app.sel;
+    const act = e.target.dataset && e.target.dataset.act;
     if (!act) return;
     if (act === 'code') { $('#code-dlg pre').textContent = app.compiled.code; $('#code-dlg').showModal(); return; }
     if (act === 'delete') return deleteSelection(false);
     if (act === 'deletenet') return deleteSelection(true);
-    if (!s) return;
-    if (s.kind === 'block') {
-      const b = s.F.sheet.blocks.find((x) => x.id === s.id), def = b && app.project.defs[b.def];
+    if (act === 'copy') return copySelection(false);
+    if (act === 'cut') return copySelection(true);
+    if (act === 'dup') return duplicate();
+    const one = selBlock(), reg = selRegion();
+    if (one) {
+      const s = one, b = one.b, def = b && app.project.defs[b.def];
       if (act === 'zoom') zoomToBlock(s.F, b);
       if (act === 'wav') pickWav(s.F, b);
       if (def && (act === 'addin' || act === 'addout')) {
@@ -709,31 +917,35 @@
         let row = 0; while (used.has(row)) row++;
         if (row >= def.fh) { toast('No free row on that side; make the block taller first.'); return; }
         def.ports.push({ dir, row, name: dir + (def.ports.filter((p) => p.dir === dir).length + 1) });
-        app.changed(); renderInspector();
+        app.changed(); app.commit('add port'); renderInspector();
       }
-      if (def && act === 'delport') { def.ports.splice(Number(e.target.dataset.i), 1); app.changed(); renderInspector(); }
-    } else {
-      const reg = s.F.sheet.regions[s.id];
-      if (act === 'rmknob') { delete reg.knob; app.changed(); renderInspector(); }
-      if (act === 'default') { reg.value = regionValue(s.F, s.id); delete app.project.values[s.F.path + s.id]; app.changed(); renderInspector(); }
+      if (def && act === 'delport') { def.ports.splice(Number(e.target.dataset.i), 1); app.changed(); app.commit('remove port'); renderInspector(); }
+    } else if (reg) {
+      const r = reg.F.sheet.regions[reg.rid];
+      if (act === 'rmknob') { delete r.knob; app.changed(); app.commit('remove handle'); renderInspector(); }
+      if (act === 'default') { r.value = regionValue(reg.F, reg.rid); delete app.project.values[reg.F.path + reg.rid]; app.changed(); app.commit('set default'); renderInspector(); }
     }
   });
   $('#inspector').addEventListener('change', (e) => {
-    const prop = e.target.dataset && e.target.dataset.prop, s = app.sel;
-    if (!prop || !s) return;
-    const v = e.target.value, num = Number(v);
-    if (s.kind === 'region') {
-      const reg = s.F.sheet.regions[s.id];
-      if (prop === 'value' && Number.isFinite(num)) setRegionValue(s.F, s.id, num);
+    const prop = e.target.dataset && e.target.dataset.prop;
+    if (!prop) return;
+    inspectorChange(prop, e.target.value);
+    app.commit('edit ' + prop.split('.')[0]);
+  });
+  function inspectorChange(prop, v) {
+    const num = Number(v), one = selBlock(), reg = selRegion();
+    if (reg) {
+      const r = reg.F.sheet.regions[reg.rid];
+      if (prop === 'value' && Number.isFinite(num)) setRegionValue(reg.F, reg.rid, num);
       else if (prop.startsWith('knob.')) {
         const k = prop.slice(5);
-        reg.knob[k] = k === 'min' || k === 'max' ? (Number.isFinite(num) ? num : reg.knob[k]) : v;
+        r.knob[k] = k === 'min' || k === 'max' ? (Number.isFinite(num) ? num : r.knob[k]) : v;
         app.changed(false);
       }
       return;
     }
-    const b = s.F.sheet.blocks.find((x) => x.id === s.id);
-    if (!b) return;
+    if (!one) return;
+    const s = one, b = one.b;
     if (prop === 'window') { b.window = num; app.changed(); return; }
     if (prop === 'loop') { b.loop = v === '1'; app.changed(); return; }
     if (prop === 'swapall') return;
@@ -752,22 +964,34 @@
       else { toast('That row is taken or outside the block.'); renderInspector(); return; }
     }
     app.changed();
-  });
+  }
   $('#inspector').addEventListener('focusout', () => setTimeout(() => { if (!$('#inspector').contains(document.activeElement)) renderInspector(); }, 0));
 
   // ---- status, banner, toast -----------------------------------------------------
   function updateStatus() {
     const h = app.hover;
-    if (!h) { $('#status').textContent = ''; return; }
-    let s = (h.F.chain.length ? 'Board › ' + h.F.chain.join(' › ') : 'Board') + `   ${h.x},${h.y}   ${app.layer === G.TOP ? 'top' : 'bottom'} layer`;
-    if (app.route) s += '   ·   routing: click = corner, / = flip, Tab = via, Esc = done';
-    const r = regionAt(h);
-    if (r) {
-      const key = h.F.path + r.rid;
-      s += `   ·   ${r.rid}${written(key) ? ' (written)' : ' (constant)'} = ${GW.fmt(app.valueOf(key))}`;
-    } else if (h.occ && h.occ.block) s += `   ·   ${h.occ.block.type === 'comp' ? h.occ.block.def : G.info(h.occ.block.type).title}${h.occ.pad ? ' pad ' + (h.occ.pad.name || h.occ.pad.dir) : ''}`;
-    if (h.F.def) s += `   ·   editing "${h.F.def.name}", shared by ${instances(h.F.def.name)} instance(s)`;
-    $('#status').textContent = s;
+    let s = '';
+    if (h) {
+      s = (h.F.chain.length ? 'Board › ' + h.F.chain.join(' › ') : 'Board') + `   ${h.x},${h.y}   ${app.layer === G.TOP ? 'top' : 'bottom'} layer`;
+      const r = regionAt(h);
+      if (r) {
+        const key = h.F.path + r.rid;
+        s += `   ·   ${r.rid}${written(key) ? ' (written)' : ' (constant)'} = ${GW.fmt(app.valueOf(key))}`;
+      } else if (h.occ && h.occ.block) s += `   ·   ${h.occ.block.type === 'comp' ? h.occ.block.def : G.info(h.occ.block.type).title}${h.occ.pad ? ' pad ' + (h.occ.pad.name || h.occ.pad.dir) : ''}`;
+      if (h.F.def) s += `   ·   editing "${h.F.def.name}", shared by ${instances(h.F.def.name)} instance(s)`;
+    }
+    $('#status').innerHTML = `<span>${esc(s)}</span><span class="hint">${esc(hint())}</span>`;
+  }
+  // What the pointer and keys do right now.
+  function hint() {
+    if (app.pasting) return 'click: paste · Shift-click: paste again · Esc: cancel';
+    if (app.placing) return 'click: place · R: rotate · Shift-click: place several · Esc: cancel';
+    if (app.route) return 'click: corner · /: flip corner · Tab: via · Esc: done';
+    if (app.tool === 'route') return 'click a pin, a trace or the board to start a trace';
+    if (app.tool === 'erase') return 'drag to erase · Shift: both layers';
+    if (app.tool === 'knob') return 'click a constant net to add or remove a handle';
+    if (app.sel && !E.isEmpty(app.sel)) return 'drag: move · arrows: nudge · Ctrl+C / X / D · Del: delete · Esc: deselect';
+    return 'drag: box-select · click: select · Shift: add · right-drag: pan · wheel: zoom · ?: help';
   }
   function updateBanner() {
     const m = [];
@@ -783,11 +1007,14 @@
   }
 
   // ---- files and examples ----------------------------------------------------------
-  function loadProject(p) {
+  // Load a project. With a label the load is an undoable step; without one it
+  // starts a fresh history (page load).
+  function loadProject(p, label) {
     p.values = p.values || {};
-    app.project = p; app.sel = null; app.placing = null; app.version++;
+    app.project = p; app.sel = null; app.placing = null; app.pasting = null; app.route = null; app.hover = null; app.hotRegion = null; app.version++;
+    if (label) app.commit(label); else app.history.reset(JSON.stringify(p));
     updatePalette(); app.changed();
-    recompile(); renderInspector();
+    recompile(); renderInspector(); updateToolbar();
     requestAnimationFrame(() => app.view.fitAll());
   }
   $('#examples').innerHTML = '<option value="">Examples…</option>' + GW.EXAMPLES.map((x, i) => `<option value="${i}">${esc(x.title)}</option>`).join('');
@@ -797,7 +1024,7 @@
     loadExample(i);
   });
   function loadExample(i) {
-    loadProject(GW.exampleProject(i, app.project ? app.project.defs : null));
+    loadProject(GW.exampleProject(i, app.project ? app.project.defs : null), app.project ? 'load ' + GW.EXAMPLES[i].title : null);
     app.host.reset(); setRate(GW.EXAMPLES[i].rate); app.host.setRunning(true); updateClock();
     if (!EMBED) toast(GW.EXAMPLES[i].note, 8000);
   }
@@ -851,7 +1078,7 @@
     try {
       const p = JSON.parse(await f.text());
       if (!p.root || !p.defs) throw new Error('not a Sample Factory file');
-      if (confirm('Replace the current project?')) loadProject(p);
+      if (confirm('Replace the current project? (Ctrl+Z brings it back.)')) loadProject(p, 'import');
     } catch (err) { toast('Import failed: ' + err.message); }
   });
   $('#btn-help').addEventListener('click', () => $('#help-dlg').showModal());
@@ -862,9 +1089,9 @@
     const wasBad = app.snap && app.snap.bad;
     app.snap = snap;
     $('#ticks').textContent = 'tick ' + snap.ticks.toLocaleString('en-US');
-    const live = document.querySelector('#inspector [data-live="pos"]'), s = app.sel;
-    if (live && s && app.running) {
-      const pl = app.running.players.find((x) => x.path === s.path + s.id);
+    const live = document.querySelector('#inspector [data-live="pos"]'), one = selBlock();
+    if (live && one && app.running) {
+      const pl = app.running.players.find((x) => x.path === one.F.path + one.b.id);
       if (pl && snap.v) live.textContent = Math.round(snap.v[pl.v] || 0).toLocaleString('en-US');
     }
     app.view.dirty = true;
@@ -882,4 +1109,13 @@
   if (Q.has('rate')) setRate(Math.min(RATE_MAX, Math.max(RATE_MIN, Number(Q.get('rate')) || RATE_MAX)));
   if (Q.has('focus')) setTimeout(() => focusOn(Q.get('focus')), 100);
   setTool('select');
+
+  // Hooks for the interactivity tests (tests/ui/ui-tests.js, run by tests/run-ui.py).
+  app.loadExample = loadExample;
+  app.select = select;
+  if (Q.get('uitest') === '1') {
+    const sc = document.createElement('script');
+    sc.src = 'tests/ui/ui-tests.js';
+    document.body.appendChild(sc);
+  }
 })();

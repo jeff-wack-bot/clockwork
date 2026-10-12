@@ -9,33 +9,44 @@
 <body>
   <header id="top">
     <div class="brand">▤ Sample <span>Factory</span></div>
-    <button id="btn-audio" title="Switch the DAC (speaker output) on or off">▶ Start audio</button>
+    <button id="btn-audio" class="primary" title="Switch the DAC (speaker output) on or off">▶ Start audio</button>
     <div class="group clock">
-      <span class="dim">Clock</span>
       <input type="range" id="rate" min="0" max="1" step="0.001" title="Clock rate: far right is real time (one tick per audio sample)">
       <span id="rate-label" class="mono"></span>
-      <button id="btn-run" title="Pause or run the clock">Pause</button>
-      <button id="btn-step" title="Advance exactly one tick (.)">Step</button>
-      <button id="btn-reset" title="Clear every written register to 0">Reset</button>
+      <button id="btn-run" class="icon" title="Pause or run the clock">⏸</button>
+      <button id="btn-step" class="icon" title="Advance exactly one tick (.)">⏭</button>
+      <button id="btn-reset" class="icon" title="Reset: clear every register to 0 (rewinds samples)">⟲</button>
       <span id="ticks" class="mono">tick 0</span>
     </div>
-    <div class="group tools">
-      <button data-tool="select" title="Select, move blocks, turn knobs (V)">Select</button>
-      <button data-tool="route" title="Route traces: click to start, click for corners, / flips the corner, Tab drops a via, Esc ends (W)">Route</button>
-      <button data-tool="erase" title="Scrub away traces on the active layer; Shift = both layers; right-drag erases in any tool (E)">Erase</button>
-      <button data-tool="knob" title="Add or remove a handle on a net nobody writes (K)">Knob</button>
-      <button id="btn-layer" title="Active layer (Tab)">Layer: top</button>
+    <div class="group tools" role="toolbar" aria-label="Tools">
+      <button data-tool="select" title="Select and move (V). Drag on empty board to box-select.">⬚ Select</button>
+      <button data-tool="route" title="Route traces (W): click to start, click for corners, / flips, Tab drops a via, Esc ends">⌇ Route</button>
+      <button data-tool="erase" title="Erase traces (E) on the active layer; Shift = both layers">⌫ Erase</button>
+      <button data-tool="knob" title="Knob (K): add or remove a handle on a net nobody drives">◔ Knob</button>
+      <button id="btn-layer" title="Active layer (Tab)">Top</button>
+    </div>
+    <div class="group edit" role="toolbar" aria-label="Edit">
+      <button id="btn-undo" class="icon" title="Undo (Ctrl+Z)" disabled>↶</button>
+      <button id="btn-redo" class="icon" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>
+      <button id="btn-cut" title="Cut (Ctrl+X)" disabled>Cut</button>
+      <button id="btn-copy" title="Copy (Ctrl+C)" disabled>Copy</button>
+      <button id="btn-paste" title="Paste (Ctrl+V)">Paste</button>
+      <button id="btn-dup" title="Duplicate (Ctrl+D)" disabled>Duplicate</button>
+      <button id="btn-del" class="danger" title="Delete (Del)" disabled>Delete</button>
     </div>
     <div class="spacer"></div>
-    <button id="btn-style" title="Try different ways of drawing operations, branch points, direction and registers">Style ▾</button>
-    <select id="examples"></select>
-    <button id="btn-export">Export</button>
-    <button id="btn-import">Import</button>
-    <button id="btn-help">?</button>
-    <a class="link" href="index_old.html" title="The original patch editor">Patch editor</a>
+    <select id="examples" title="Load an example (undoable)"></select>
+    <button id="btn-style" title="How operations, branch points, direction and registers are drawn">Style ▾</button>
+    <button id="btn-export" title="Download the project as JSON">Export</button>
+    <button id="btn-import" title="Open a project JSON">Import</button>
+    <button id="btn-help" class="icon" title="Help and keyboard shortcuts (?)">?</button>
   </header>
   <div id="main">
-    <aside id="palette"></aside>
+    <aside id="palette">
+      <input id="palette-search" type="search" placeholder="Search blocks…" aria-label="Search blocks" autocomplete="off">
+      <div id="palette-list"></div>
+      <p class="dim small"><a class="link" href="index_old.html" title="The original Clockwork patch editor">Old patch editor</a></p>
+    </aside>
     <section id="center">
       <div id="banner"></div>
       <canvas id="grid"></canvas>
@@ -59,12 +70,25 @@
     <p><b>Flip-flops are the registers.</b> The Delay IC is a flip-flop: the net it drives is a register that only changes at the clock edge. Every feedback loop needs one; a loop without one is an error. The right-hand panel shows the critical path: the longest chain of logic between flip-flops.</p>
     <p><b>Sample stacks.</b> A Sample block is a stack of every sample in a WAV file. Each tick it emits the next one, on the same clock edge where the flip-flops latch, so at real time it plays the song and at a slow clock you can step through it one sample at a time. Place one from the palette (Sources) or drop a WAV on the board; double-click the block to load a different file. Reset rewinds it. Songs stay in this browser and are not part of exported files.</p>
     <p><b>Unwritten nets are constants.</b> Route a short trace from an input pin and give it a handle with the knob tool. A net that an IC drives can't have a handle.</p>
-    <p><b>Routing.</b> With Route (W): click a pin, a trace or empty board to start. Click to place corners and press / to flip the corner. Finish on a pin or a trace to connect. A trace can't cross another net on the same layer: press Tab to drop a via and continue on the bottom layer, which passes under everything. Click a trace with Select to pick the track between junctions; Delete removes it, Shift+Delete removes the whole net.</p>
+    <p><b>Routing.</b> With Route (W): click a pin, a trace or empty board to start. Click to place corners and press / to flip the corner. Finish on a pin or a trace to connect. A trace can't cross another net on the same layer: press Tab to drop a via and continue on the bottom layer, which passes under everything.</p>
     <p><b>Style lab.</b> The Style menu changes how operations, branch points, direction and registers are drawn. <a href="styles.html">Compare them side by side.</a></p>
     <p><b>Zoom is navigation.</b> Every composite IC shows its own board inside. Scroll in until its traces are big and you are working inside it. The definition is shared, but each instance keeps its own knob values. Double-click an IC to fly into it, Z or Esc to back out, H to see everything.</p>
     <p><b>One clock.</b> The slider runs the design from 0.5 ticks/s up to real time (48 000 ticks/s, one per audio sample). With audio on, the speaker holds the DAC between ticks, so slow clocks are clicks and real time is sound.</p>
+    <p><b>Selecting and editing.</b> With Select (V), drag on empty board to box-select; click to select a block or a trace; Shift-click adds or removes. Drag anything selected to move the whole selection, or nudge it with the arrow keys. Copy, cut, paste and duplicate work on blocks and traces together, keeping knobs and nets intact. Every change can be undone.</p>
     <h3>Keys</h3>
-    <p>V select · W route · E erase · K knob · Tab layer/via · / flip corner · Esc end route · R rotate · Delete · Space-drag or middle-drag pan · wheel zoom · . step</p>
+    <table class="keys">
+      <tr><td><kbd>V</kbd> <kbd>W</kbd> <kbd>E</kbd> <kbd>K</kbd></td><td>select · route · erase · knob</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>undo / redo (also <kbd>Ctrl</kbd>+<kbd>Y</kbd>)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> <kbd>D</kbd> <kbd>A</kbd></td><td>copy · cut · paste · duplicate · select all</td></tr>
+      <tr><td><kbd>Del</kbd> / <kbd>Shift</kbd>+<kbd>Del</kbd></td><td>delete selection / a clicked trace's whole net</td></tr>
+      <tr><td>arrows (<kbd>Shift</kbd>: ×5)</td><td>nudge the selection</td></tr>
+      <tr><td><kbd>R</kbd></td><td>rotate the selected atom, or the one being placed</td></tr>
+      <tr><td><kbd>Tab</kbd> · <kbd>/</kbd> · <kbd>Esc</kbd></td><td>layer (via while routing) · flip corner · cancel / deselect / zoom out</td></tr>
+      <tr><td>wheel · right/middle/<kbd>Space</kbd>-drag</td><td>zoom · pan</td></tr>
+      <tr><td><kbd>F</kbd> · <kbd>H</kbd> · <kbd>Z</kbd></td><td>zoom to selection · show everything · zoom out one level</td></tr>
+      <tr><td>double-click</td><td>enter a block · type a knob value · load a WAV</td></tr>
+      <tr><td><kbd>.</kbd> · <kbd>?</kbd></td><td>step one tick · this help</td></tr>
+    </table>
     <button class="close">Close</button>
   </dialog>
   <input type="file" id="file-input" accept=".json" hidden>
@@ -77,6 +101,7 @@
   <script src="js/grid/engine.js"></script>
   <script src="js/grid/samples.js"></script>
   <script src="js/grid/view.js"></script>
+  <script src="js/grid/editor.js"></script>
   <script src="js/grid/app.js"></script>
 </body>
 </html>

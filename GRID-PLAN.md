@@ -208,3 +208,37 @@ Decisions:
 
 Documentation for this round is in the notebook (`AI_work/sample-factory/`).
 
+## Revision 6: editor architecture and GUI polish (2026-10-12)
+
+* **No GUI framework.** The hard parts (the canvas board, routing, and editing
+  semantics such as undo, selection and clipboard) are not what frameworks
+  provide, and a framework would add a build step to a no-build project. The
+  DOM side (toolbar, palette, inspector) is small enough for plain JS.
+* **An editing core without a DOM** (`js/grid/editor.js`): selection model,
+  box-select, track picking, copy/paste, delete, move, rubber-band move, undo
+  history. Node tests drive it directly (`tests/editor.test.js`).
+* **Undo = project snapshots, one per gesture.** Mutations happen in many
+  places, so instead of a command per operation, `app.commit(label)` runs at the
+  end of every gesture and records a JSON snapshot if the project changed
+  (capped at 200). Knob drags and moves are one step each; loading an example or
+  importing is undoable.
+* **Selection** is a set of blocks plus a set of trace cells (either layer) on
+  one board. Clicking a trace selects its track and shows its net.
+* **Moves are all-or-nothing** and never land a pin on a foreign net. Blocks
+  dragged without their traces cut their own traces under them and re-route
+  each left-behind pin to its net (the maze router), computed from the board
+  as it was at drag start, so dragging back restores it exactly. Pins that
+  can't be reached are reported.
+* **Paste** keeps the clip's nets separate from the board's: pasted traces may
+  not touch existing traces, and pasted knobs, constants and per-instance values
+  come along. The clipboard is stored in localStorage.
+* **Pointer model:** drag on empty board = box-select (was: pan); right-,
+  middle- or Space-drag = pan (right-drag used to erase; erasing is the Erase
+  tool's job).
+* **Toolbar** wraps onto two rows on narrow windows instead of scrolling; edit
+  buttons are words, not glyphs that may be missing from the system font.
+* **Interactivity tests** run in the real page (`?uitest=1`) with synthetic
+  pointer and key events. `tests/run-ui.py` serves the repo, opens headless
+  Firefox and collects the report over HTTP, with no dependencies besides
+  Python and Firefox. CI runs them.
+
