@@ -1,0 +1,77 @@
+{
+  "format": "sample-factory-design",
+  "version": 3,
+  "kind": "example",
+  "meta": {
+    "title": "Analog voice (rack)",
+    "note": "A subtractive synth in the rack: clock, analog sequencer, glide, VCO, ladder filter, envelope and VCA, patched with cables. Turn the sequencer knobs and the filter. Slide the clock down: the analog circuits slow down with it.",
+    "rate": 48000,
+    "view": "rack"
+  },
+  "uses": {},
+  "board": {"nextId": 1, "blocks": [], "wires": []},
+  "defs": {},
+  "values": {},
+  "rack": {
+    "nextId": 26,
+    "modules": [
+      {"id": "m1", "type": "clock", "x": 0, "row": 0, "params": {"bpm": 120, "pw": 0.5}},
+      {
+        "id": "m2",
+        "type": "seq8",
+        "x": 10,
+        "row": 0,
+        "params": {
+          "k0": 0,
+          "k1": 0.25,
+          "k2": 0.5833,
+          "k3": 0.4167,
+          "k4": 0.5833,
+          "k5": 0.25,
+          "k6": 0.3333,
+          "k7": 0.0833,
+          "len": 8,
+          "quant": 1,
+          "range": 0
+        }
+      },
+      {"id": "m3", "type": "slew", "x": 40, "row": 0, "params": {"fall": 0.03, "rise": 0.03}},
+      {"id": "m4", "type": "lfo", "x": 46, "row": 0, "params": {"amp": 3, "rate": 0.3}},
+      {
+        "id": "m5",
+        "type": "vco",
+        "x": 56,
+        "row": 0,
+        "params": {"drift": 0, "fine": 0, "fm": 0, "freq": -1, "pw": 0.5, "track": 0}
+      },
+      {
+        "id": "m6",
+        "type": "mixer",
+        "x": 70,
+        "row": 0,
+        "params": {"l1": 0.8, "l2": 0.4, "l3": 0, "l4": 0, "master": 0.8}
+      },
+      {"id": "m7", "type": "adsr", "x": 0, "row": 1, "params": {"a": 0.005, "d": 0.3, "r": 0.25, "s": 0.4}},
+      {"id": "m8", "type": "vcf", "x": 10, "row": 1, "params": {"cv": 0.35, "drive": 2, "freq": 300, "res": 0.55}},
+      {"id": "m9", "type": "vca", "x": 22, "row": 1, "params": {"level": 1, "resp": 0.5}},
+      {"id": "m10", "type": "scope2", "x": 30, "row": 1, "params": {"gain": 2.5, "time": 500}},
+      {"id": "m11", "type": "audio", "x": 46, "row": 1, "params": {"level": 1}}
+    ],
+    "cables": [
+      {"id": "c12", "from": ["m1","clk"], "to": ["m2","clock"], "color": 0},
+      {"id": "c13", "from": ["m2","cv"], "to": ["m3","in"], "color": 1},
+      {"id": "c14", "from": ["m3","out"], "to": ["m5","voct"], "color": 2},
+      {"id": "c15", "from": ["m2","gate"], "to": ["m7","gate"], "color": 3},
+      {"id": "c16", "from": ["m4","sin"], "to": ["m5","pwm"], "color": 4},
+      {"id": "c17", "from": ["m5","saw"], "to": ["m6","in1"], "color": 5},
+      {"id": "c18", "from": ["m5","sqr"], "to": ["m6","in2"], "color": 6},
+      {"id": "c19", "from": ["m6","out"], "to": ["m8","in"], "color": 0},
+      {"id": "c20", "from": ["m7","env"], "to": ["m8","cv"], "color": 1},
+      {"id": "c21", "from": ["m7","env"], "to": ["m9","cv"], "color": 2},
+      {"id": "c22", "from": ["m7","env"], "to": ["m10","b"], "color": 3},
+      {"id": "c23", "from": ["m8","lp"], "to": ["m9","in"], "color": 4},
+      {"id": "c24", "from": ["m9","out"], "to": ["m11","l"], "color": 5},
+      {"id": "c25", "from": ["m9","out"], "to": ["m10","a"], "color": 6}
+    ]
+  }
+}

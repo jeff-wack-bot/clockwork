@@ -1,0 +1,969 @@
+{
+ "note": "What saved designs depend on. See tests/format.test.js before changing it.",
+ "formatVersion": 6,
+ "board": {
+  "add": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "float"
+    ],
+    [
+     0,
+     2,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "float"
+    ]
+   ]
+  },
+  "adsr": {
+   "w": 5,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     8,
+     "analog"
+    ],
+    [
+     3,
+     8,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     10,
+     "analog"
+    ]
+   ]
+  },
+  "and": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ],
+    [
+     0,
+     2,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "fixed"
+    ]
+   ]
+  },
+  "atten": {
+   "w": 4,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     7,
+     "analog"
+    ],
+    [
+     2,
+     7,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     1,
+     9,
+     "analog"
+    ],
+    [
+     2,
+     9,
+     "analog"
+    ]
+   ]
+  },
+  "awg": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     1,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "analog"
+    ]
+   ]
+  },
+  "bits": {
+   "w": 1,
+   "h": 1,
+   "ins": [],
+   "outs": [
+    [
+     0,
+     0,
+     "fixed"
+    ]
+   ]
+  },
+  "clock": {
+   "w": 5,
+   "h": 13,
+   "ins": [
+    [
+     2,
+     5,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     1,
+     8,
+     "analog"
+    ],
+    [
+     3,
+     8,
+     "analog"
+    ],
+    [
+     2,
+     10,
+     "analog"
+    ]
+   ]
+  },
+  "const": {
+   "w": 1,
+   "h": 1,
+   "ins": [],
+   "outs": [
+    [
+     0,
+     0,
+     "float"
+    ]
+   ]
+  },
+  "delay": {
+   "w": 3,
+   "h": 1,
+   "ins": [
+    [
+     0,
+     0,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     0,
+     "float"
+    ]
+   ]
+  },
+  "dff": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     0,
+     "fixed"
+    ],
+    [
+     2,
+     2,
+     "fixed"
+    ]
+   ]
+  },
+  "exp2": {
+   "w": 3,
+   "h": 1,
+   "ins": [
+    [
+     0,
+     0,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     0,
+     "float"
+    ]
+   ]
+  },
+  "gain": {
+   "w": 2,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     5,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     1,
+     7,
+     "analog"
+    ]
+   ]
+  },
+  "gt": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "float"
+    ],
+    [
+     0,
+     2,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "float"
+    ]
+   ]
+  },
+  "in": {
+   "w": 3,
+   "h": 1,
+   "ins": [],
+   "outs": [
+    [
+     2,
+     0,
+     "float"
+    ]
+   ]
+  },
+  "join": {
+   "w": 2,
+   "h": 1,
+   "ins": [],
+   "outs": [
+    [
+     1,
+     0,
+     "fixed"
+    ]
+   ]
+  },
+  "lfo": {
+   "w": 5,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     5,
+     "analog"
+    ],
+    [
+     3,
+     5,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     1,
+     8,
+     "analog"
+    ],
+    [
+     3,
+     8,
+     "analog"
+    ],
+    [
+     1,
+     10,
+     "analog"
+    ],
+    [
+     3,
+     10,
+     "analog"
+    ]
+   ]
+  },
+  "log2": {
+   "w": 3,
+   "h": 1,
+   "ins": [
+    [
+     0,
+     0,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     0,
+     "float"
+    ]
+   ]
+  },
+  "mixer": {
+   "w": 7,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     7,
+     "analog"
+    ],
+    [
+     2,
+     7,
+     "analog"
+    ],
+    [
+     4,
+     7,
+     "analog"
+    ],
+    [
+     5,
+     7,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     10,
+     "analog"
+    ],
+    [
+     4,
+     10,
+     "analog"
+    ]
+   ]
+  },
+  "mul": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "float"
+    ],
+    [
+     0,
+     2,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "float"
+    ]
+   ]
+  },
+  "nand": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ],
+    [
+     0,
+     2,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "fixed"
+    ]
+   ]
+  },
+  "noise": {
+   "w": 2,
+   "h": 13,
+   "ins": [],
+   "outs": [
+    [
+     1,
+     5,
+     "analog"
+    ],
+    [
+     1,
+     7,
+     "analog"
+    ]
+   ]
+  },
+  "nor": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ],
+    [
+     0,
+     2,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "fixed"
+    ]
+   ]
+  },
+  "not": {
+   "w": 3,
+   "h": 1,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     0,
+     "fixed"
+    ]
+   ]
+  },
+  "or": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ],
+    [
+     0,
+     2,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "fixed"
+    ]
+   ]
+  },
+  "out": {
+   "w": 3,
+   "h": 1,
+   "ins": [
+    [
+     0,
+     0,
+     "float"
+    ]
+   ],
+   "outs": []
+  },
+  "seq8": {
+   "w": 15,
+   "h": 13,
+   "ins": [
+    [
+     6,
+     7,
+     "analog"
+    ],
+    [
+     8,
+     7,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     6,
+     9,
+     "analog"
+    ],
+    [
+     8,
+     9,
+     "analog"
+    ]
+   ]
+  },
+  "slew": {
+   "w": 3,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     8,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     1,
+     10,
+     "analog"
+    ]
+   ]
+  },
+  "split": {
+   "w": 2,
+   "h": 1,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ]
+   ],
+   "outs": []
+  },
+  "switch": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     1,
+     "float"
+    ],
+    [
+     0,
+     0,
+     "float"
+    ],
+    [
+     0,
+     2,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "float"
+    ]
+   ]
+  },
+  "table": {
+   "w": 4,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     1,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     3,
+     1,
+     "float"
+    ]
+   ]
+  },
+  "value": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     1,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "float"
+    ]
+   ]
+  },
+  "vca": {
+   "w": 4,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     5,
+     "analog"
+    ],
+    [
+     2,
+     5,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     7,
+     "analog"
+    ]
+   ]
+  },
+  "vcf": {
+   "w": 6,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     8,
+     "analog"
+    ],
+    [
+     3,
+     8,
+     "analog"
+    ],
+    [
+     4,
+     8,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     1,
+     10,
+     "analog"
+    ],
+    [
+     3,
+     10,
+     "analog"
+    ],
+    [
+     4,
+     10,
+     "analog"
+    ]
+   ]
+  },
+  "vco": {
+   "w": 7,
+   "h": 13,
+   "ins": [
+    [
+     1,
+     8,
+     "analog"
+    ],
+    [
+     2,
+     8,
+     "analog"
+    ],
+    [
+     4,
+     8,
+     "analog"
+    ],
+    [
+     5,
+     8,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     1,
+     10,
+     "analog"
+    ],
+    [
+     2,
+     10,
+     "analog"
+    ],
+    [
+     4,
+     10,
+     "analog"
+    ],
+    [
+     5,
+     10,
+     "analog"
+    ]
+   ]
+  },
+  "voltmeter": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     1,
+     "analog"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "float"
+    ]
+   ]
+  },
+  "volts": {
+   "w": 1,
+   "h": 1,
+   "ins": [],
+   "outs": [
+    [
+     0,
+     0,
+     "analog"
+    ]
+   ]
+  },
+  "word": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     1,
+     "float"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "fixed"
+    ]
+   ]
+  },
+  "xnor": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ],
+    [
+     0,
+     2,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "fixed"
+    ]
+   ]
+  },
+  "xor": {
+   "w": 3,
+   "h": 3,
+   "ins": [
+    [
+     0,
+     0,
+     "fixed"
+    ],
+    [
+     0,
+     2,
+     "fixed"
+    ]
+   ],
+   "outs": [
+    [
+     2,
+     1,
+     "fixed"
+    ]
+   ]
+  }
+ },
+ "modules": {
+  "adsr": {
+   "params": [
+    "a",
+    "d",
+    "s",
+    "r"
+   ]
+  },
+  "atten": {
+   "params": [
+    "a1",
+    "o1",
+    "a2",
+    "o2"
+   ]
+  },
+  "awg": {
+   "params": []
+  },
+  "clock": {
+   "params": [
+    "bpm",
+    "pw"
+   ]
+  },
+  "gain": {
+   "params": [
+    "k"
+   ]
+  },
+  "lfo": {
+   "params": [
+    "rate",
+    "amp"
+   ]
+  },
+  "mixer": {
+   "params": [
+    "l1",
+    "l2",
+    "l3",
+    "l4",
+    "master"
+   ]
+  },
+  "noise": {
+   "params": [
+    "amp"
+   ]
+  },
+  "seq8": {
+   "params": [
+    "k0",
+    "k1",
+    "k2",
+    "k3",
+    "k4",
+    "k5",
+    "k6",
+    "k7",
+    "len",
+    "range",
+    "quant"
+   ]
+  },
+  "slew": {
+   "params": [
+    "rise",
+    "fall"
+   ]
+  },
+  "value": {
+   "params": [
+    "signed",
+    "scale"
+   ]
+  },
+  "vca": {
+   "params": [
+    "level",
+    "resp"
+   ]
+  },
+  "vcf": {
+   "params": [
+    "freq",
+    "res",
+    "cv",
+    "drive"
+   ]
+  },
+  "vco": {
+   "params": [
+    "freq",
+    "fine",
+    "pw",
+    "fm",
+    "drift",
+    "track"
+   ]
+  },
+  "voltmeter": {
+   "params": []
+  },
+  "word": {
+   "params": [
+    "bits",
+    "signed",
+    "mode",
+    "scale"
+   ]
+  }
+ }
+}

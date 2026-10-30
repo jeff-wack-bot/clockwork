@@ -1,0 +1,76 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "example",
+  "meta": {
+    "title": "Sequenced synth",
+    "note": "No panels: to change the melody, zoom into Seq4 and turn its knobs. Slide the clock down to hear (and see) it slow to a crawl.",
+    "rate": 48000
+  },
+  "uses": {
+    "Decay": "2x1 in@0:trig out@0:env",
+    "OnePole": "4x3 in@1:x out@1:y",
+    "Phasor": "6x3 in@0:Hz out@0:phase out@2:wrap",
+    "Seq4": "5x4 in@0:phase out@1:Hz",
+    "VCO": "4x3 in@0:Hz in@2:amp out@1:saw"
+  },
+  "board": {
+    "nextId": 38,
+    "blocks": [
+      {"id": "b1", "type": "comp", "def": "Phasor", "x": 6, "y": 2},
+      {"id": "b2", "type": "mul", "x": 6, "y": 8},
+      {"id": "b3", "type": "comp", "def": "Phasor", "x": 12, "y": 8},
+      {"id": "b4", "type": "comp", "def": "Seq4", "x": 20, "y": 8},
+      {"id": "b5", "type": "comp", "def": "VCO", "x": 28, "y": 8},
+      {"id": "b6", "type": "comp", "def": "OnePole", "x": 35, "y": 8},
+      {"id": "b7", "type": "comp", "def": "Decay", "x": 35, "y": 1},
+      {"id": "b8", "type": "mul", "x": 42, "y": 8},
+      {"id": "b9", "type": "mul", "x": 47, "y": 8},
+      {"id": "b10", "type": "out", "x": 53, "y": 6, "name": "out"},
+      {"id": "r12", "type": "const", "x": 6, "y": 12, "value": 0.25},
+      {
+        "id": "r13",
+        "type": "const",
+        "x": 47,
+        "y": 13,
+        "value": 0.3,
+        "knob": {"label": "volume", "min": 0, "max": 1, "scale": "lin"}
+      },
+      {
+        "id": "r14",
+        "type": "const",
+        "x": 4,
+        "y": 5,
+        "value": 4,
+        "knob": {"label": "steps/s", "min": 0.5, "max": 16, "scale": "log"}
+      }
+    ],
+    "wires": [
+      {"id": "w24", "from": "r12.o0", "to": "b2.i1", "path": [[6,12],[6,11],[6,10]]},
+      {"id": "w25", "from": "r13.o0", "to": "b9.i1", "path": [[47,13],[47,12],[47,11],[47,10]]},
+      {"id": "w26", "from": "r14.o0", "to": "b1.i0", "path": [[4,5],[4,4],[4,3],[4,2],[5,2],[6,2]]},
+      {"id": "w27", "from": "r14.o0", "to": "b2.i0", "path": [[4,5],[4,6],[5,6],[6,6],[6,7],[6,8]]},
+      {"id": "w28", "from": "b2.o0", "to": "b3.i0", "path": [[8,9],[9,9],[10,9],[10,8],[11,8],[12,8]]},
+      {"id": "w29", "from": "b3.o0", "to": "b4.i0", "path": [[17,8],[18,8],[19,8],[20,8]]},
+      {"id": "w30", "from": "b4.o0", "to": "b5.i0", "path": [[24,9],[25,9],[26,9],[27,9],[27,8],[28,8]]},
+      {"id": "w31", "from": "b5.o0", "to": "b6.i0", "path": [[31,9],[32,9],[33,9],[34,9],[35,9]]},
+      {
+        "id": "w32",
+        "from": "b1.o1",
+        "to": "b7.i0",
+        "path": [[11,4],[12,4],[13,4],[14,4],[15,4],[16,4],[17,4],[18,4],[19,4],[20,4],[21,4],[22,4],[23,4],[24,4],[25,4],[26,4],[27,4],[28,4],[28,3],[28,2],[29,2],[30,2],[31,2],[32,2],[33,2],[33,1],[34,1],[35,1]]
+      },
+      {"id": "w33", "from": "b6.o0", "to": "b8.i0", "path": [[38,9],[39,9],[40,9],[40,8],[41,8],[42,8]]},
+      {
+        "id": "w34",
+        "from": "b7.o0",
+        "to": "b8.i1",
+        "path": [[36,1],[36,2],[37,2],[38,2],[39,2],[40,2],[40,3],[40,4],[40,5],[40,6],[40,7],[40,8],[40,9],[40,10],[41,10],[42,10]]
+      },
+      {"id": "w35", "from": "b8.o0", "to": "b9.i0", "path": [[44,9],[45,9],[46,9],[46,8],[47,8]]},
+      {"id": "w36", "from": "b9.o0", "to": "b10.i0", "path": [[49,9],[50,9],[51,9],[51,8],[51,7],[51,6],[52,6],[53,6]]}
+    ]
+  },
+  "defs": {},
+  "values": {}
+}

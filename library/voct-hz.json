@@ -1,0 +1,38 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "V/OCT → Hz"},
+  "uses": {},
+  "block": {
+    "name": "V/OCT → Hz",
+    "description": "Analog to float, exponentially: Hz = 261.63 · 2^V (1 V/oct, 0 V = C4). A Voltmeter, 2ˣ, times C4.",
+    "fw": 3,
+    "fh": 3,
+    "s": 8,
+    "ports": [
+      {"dir": "in", "row": 1, "name": "in", "domain": "analog"},
+      {"dir": "out", "row": 1, "name": "out"}
+    ],
+    "nextId": 10,
+    "blocks": [
+      {"id": "b1", "type": "voltmeter", "x": 2, "y": 11},
+      {"id": "b2", "type": "exp2", "x": 8, "y": 12},
+      {"id": "b3", "type": "mul", "x": 14, "y": 11},
+      {"id": "b4", "type": "const", "x": 14, "y": 16, "value": 261.6255653005986}
+    ],
+    "wires": [
+      {"id": "w5", "from": "b4.o0", "to": "b3.i1", "path": [[14,16],[14,15],[14,14],[14,13]]},
+      {"id": "w6", "from": "port.i0", "to": "b1.i0"},
+      {"id": "w7", "from": "b1.o0", "to": "b2.i0", "path": [[4,12],[5,12],[6,12],[7,12],[8,12]]},
+      {"id": "w8", "from": "b2.o0", "to": "b3.i0", "path": [[10,12],[10,11],[11,11],[12,11],[13,11],[14,11]]},
+      {
+        "id": "w9",
+        "from": "b3.o0",
+        "to": "port.o0",
+        "path": [[16,12],[17,12],[18,12],[19,12],[20,12],[21,12],[22,12],[23,12]]
+      }
+    ]
+  },
+  "defs": {}
+}

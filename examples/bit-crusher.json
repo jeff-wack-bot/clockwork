@@ -1,0 +1,44 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "example",
+  "meta": {
+    "title": "Bit crusher",
+    "note": "An analog VCO through an 8-bit ADC, an AND with a mask of bits, and a DAC. Select the Bits block and switch bits off (or on) to hear the resolution drop: the barcodes show every bit.",
+    "rate": 48000,
+    "camera": {"board": [-3.79,-5.4,36.81,18.4]}
+  },
+  "uses": {
+    "ADC": "3x3 in@0:range in@1:in out@1:out",
+    "DAC": "3x3 in@0:range in@1:in out@1:out",
+    "Scaled Voltmeter": "3x3 in@0:range in@1:in out@1:out"
+  },
+  "board": {
+    "nextId": 15,
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "vco",
+        "x": 0,
+        "y": 0,
+        "params": {"freq": -1, "fine": 0, "pw": 0.5, "fm": 0, "drift": 0, "track": 0}
+      },
+      {"id": "b2", "type": "comp", "def": "ADC", "x": 8, "y": 4},
+      {"id": "b3", "type": "bits", "x": 13, "y": 9, "value": 240, "width": 8},
+      {"id": "b4", "type": "and", "x": 14, "y": 4},
+      {"id": "b5", "type": "comp", "def": "DAC", "x": 20, "y": 4},
+      {"id": "b6", "type": "comp", "def": "Scaled Voltmeter", "x": 25, "y": 4},
+      {"id": "b7", "type": "out", "x": 30, "y": 5, "name": "out"}
+    ],
+    "wires": [
+      {"id": "w9", "from": "b2.o0", "to": "b4.i0", "path": [[10,5],[11,5],[12,5],[13,5],[13,4],[14,4]]},
+      {"id": "w10", "from": "b3.o0", "to": "b4.i1", "path": [[13,9],[13,8],[13,7],[13,6],[14,6]]},
+      {"id": "w11", "from": "b4.o0", "to": "b5.i1", "path": [[16,5],[17,5],[18,5],[19,5],[20,5]]},
+      {"id": "w12", "from": "b5.o0", "to": "b6.i1", "style": {"color": "#e5603d"}},
+      {"id": "w13", "from": "b6.o0", "to": "b7.i0", "path": [[27,5],[28,5],[29,5],[30,5]]},
+      {"id": "w14", "from": "b1.o0", "to": "b2.i1", "style": {"color": "#e5603d"}}
+    ]
+  },
+  "defs": {},
+  "values": {"b6/port.i0": 10}
+}

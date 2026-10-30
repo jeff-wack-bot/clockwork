@@ -1,0 +1,55 @@
+{
+  "format": "sample-factory-design",
+  "version": 3,
+  "kind": "example",
+  "meta": {
+    "title": "Song through a ladder filter (board + rack)",
+    "note": "The board plays the song into the rack over the Board Bus; a ladder filter swept by an LFO shapes it, and the result goes to the speaker and back to the board's scope. Switch to the board (`) to see the other end.",
+    "rate": 48000,
+    "view": "rack"
+  },
+  "uses": {},
+  "board": {
+    "nextId": 9,
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "sample",
+        "x": 2,
+        "y": 2,
+        "sample": "demo:factory-song",
+        "name": "Factory song (built in)",
+        "loop": true
+      },
+      {"id": "b2", "type": "torack", "x": 16, "y": 1, "params": {"ch": 1}},
+      {"id": "b3", "type": "fromrack", "x": 2, "y": 9, "params": {"ch": 1}},
+      {"id": "b4", "type": "scope", "x": 9, "y": 8, "window": 4800}
+    ],
+    "wires": [
+      {"id": "w7", "from": "b1.o0", "to": "b2.i0", "path": [[11,3],[12,3],[13,3],[14,3],[14,2],[15,2],[16,2]]},
+      {"id": "w8", "from": "b3.o0", "to": "b4.i0", "path": [[4,10],[5,10],[6,10],[7,10],[8,10],[9,10]]}
+    ]
+  },
+  "defs": {},
+  "values": {},
+  "rack": {
+    "nextId": 14,
+    "modules": [
+      {"id": "m1", "type": "bus", "x": 0, "row": 0},
+      {"id": "m2", "type": "gain", "x": 14, "row": 0, "params": {"k": 5}},
+      {"id": "m3", "type": "lfo", "x": 18, "row": 0, "params": {"amp": 2, "rate": 0.2}},
+      {"id": "m4", "type": "vcf", "x": 28, "row": 0, "params": {"cv": 1, "drive": 1.2, "freq": 700, "res": 0.8}},
+      {"id": "m5", "type": "audio", "x": 40, "row": 0, "params": {"level": 1}},
+      {"id": "m6", "type": "scope2", "x": 46, "row": 0, "params": {"gain": 2.5, "time": 50}}
+    ],
+    "cables": [
+      {"id": "c7", "from": ["m1","f1"], "to": ["m2","in"], "color": 0},
+      {"id": "c8", "from": ["m2","out"], "to": ["m4","in"], "color": 1},
+      {"id": "c9", "from": ["m2","out"], "to": ["m6","b"], "color": 2},
+      {"id": "c10", "from": ["m3","tri"], "to": ["m4","cv"], "color": 3},
+      {"id": "c11", "from": ["m4","lp"], "to": ["m5","l"], "color": 4},
+      {"id": "c12", "from": ["m4","lp"], "to": ["m1","t1"], "color": 5},
+      {"id": "c13", "from": ["m4","lp"], "to": ["m6","a"], "color": 6}
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "OnePole"},
+  "uses": {},
+  "block": {
+    "name": "OnePole",
+    "description": "Low-pass filter y[n] = (1−k)·y[n−1] + k·x[n]. The flip-flop holds y between ticks.",
+    "fw": 4,
+    "fh": 3,
+    "s": 8,
+    "iw": 16,
+    "ih": 16,
+    "ports": [
+      {"dir": "in", "row": 1, "name": "x", "value": 0},
+      {"dir": "out", "row": 1, "name": "y"}
+    ],
+    "nextId": 34,
+    "blocks": [
+      {"id": "b1", "type": "mul", "x": 1, "y": 4},
+      {"id": "b2", "type": "mul", "x": 7, "y": 2},
+      {"id": "b3", "type": "add", "x": 10, "y": 5},
+      {"id": "b4", "type": "delay", "x": 13, "y": 6},
+      {"id": "b5", "type": "mul", "x": 1, "y": 8},
+      {"id": "b6", "type": "add", "x": 4, "y": 9},
+      {"id": "r7", "type": "const", "x": 1, "y": 12, "value": -1},
+      {"id": "r8", "type": "const", "x": 4, "y": 13, "value": 1},
+      {
+        "id": "r9",
+        "type": "const",
+        "x": 1,
+        "y": 7,
+        "value": 0.08,
+        "knob": {"label": "k", "min": 0.001, "max": 1, "scale": "log"}
+      }
+    ],
+    "wires": [
+      {"id": "w17", "from": "r7.o0", "to": "b5.i1", "path": [[1,12],[1,11],[1,10]]},
+      {"id": "w18", "from": "r8.o0", "to": "b6.i1", "path": [[4,13],[4,12],[4,11]]},
+      {"id": "w19", "from": "r9.o0", "to": "b1.i1", "path": [[1,7],[1,6]]},
+      {"id": "w20", "from": "r9.o0", "to": "b5.i0", "path": [[1,7],[1,8]]},
+      {"id": "w22", "from": "b5.o0", "to": "b6.i0", "path": [[3,9],[4,9]]},
+      {"id": "w23", "from": "b6.o0", "to": "b2.i1", "path": [[6,10],[7,10],[7,9],[7,8],[7,7],[7,6],[7,5],[7,4]]},
+      {
+        "id": "w24",
+        "from": "b1.o0",
+        "to": "b3.i1",
+        "path": [[3,5],[4,5],[4,6],[4,7],[5,7],[6,7],[7,7],[8,7],[9,7],[10,7]]
+      },
+      {"id": "w25", "from": "b2.o0", "to": "b3.i0", "path": [[9,3],[10,3],[10,4],[10,5]]},
+      {"id": "w26", "from": "b3.o0", "to": "b4.i0", "path": [[12,6],[13,6]]},
+      {
+        "id": "w30",
+        "from": "b4.o0",
+        "to": "b2.i0",
+        "path": [[15,6],[15,5],[15,4],[15,3],[15,2],[15,1],[14,1],[13,1],[12,1],[11,1],[10,1],[9,1],[8,1],[7,1],[7,2]]
+      },
+      {"id": "w32", "from": "port.i0", "to": "b1.i0", "path": [[0,8],[0,7],[0,6],[0,5],[0,4],[1,4]]},
+      {"id": "w33", "from": "b4.o0", "to": "port.o0", "path": [[15,6],[15,7],[15,8]]}
+    ]
+  },
+  "defs": {}
+}

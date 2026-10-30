@@ -1,0 +1,25 @@
+{
+  "format": "sample-factory-design",
+  "version": 1,
+  "meta": {"title": "Counter (format version 1)", "rate": 4, "view": "board"},
+  "board": {
+    "nextId": 11,
+    "blocks": [
+      {"id": "b1", "type": "add", "x": 4, "y": 2},
+      {"id": "b2", "type": "delay", "x": 10, "y": 3},
+      {"id": "b3", "type": "delay", "x": 12, "y": 9},
+      {"id": "b4", "type": "delay", "x": 18, "y": 9},
+      {"id": "b5", "type": "scope", "x": 16, "y": 0, "window": 16}
+    ],
+    "nets": [
+      {"id": "r6", "value": 1, "knob": {"x": 2, "y": 2, "label": "step", "min": 0, "max": 4, "scale": "lin"}, "top": [[2,2],[3,2],[4,2]], "bot": []},
+      {"id": "r7", "value": 0, "top": [[6,3],[7,3],[8,3],[9,3],[10,3]], "bot": []},
+      {"id": "r8", "value": 0, "top": [[12,2],[13,2],[14,2],[15,2],[16,2],[12,3],[4,4],[12,4],[4,5],[7,5],[8,5],[9,5],[10,5],[11,5],[12,5],[4,6],[5,6],[6,6],[7,6],[12,6],[12,7],[12,8],[12,9]], "bot": []},
+      {"id": "r9", "value": 0, "top": [[14,9],[15,9],[16,9],[17,9],[18,9]], "bot": []},
+      {"id": "r10", "value": 0, "top": [[20,9],[21,9],[22,9],[23,9]], "bot": []}
+    ]
+  },
+  "defs": {},
+  "values": {},
+  "rack": {"nextId": 1, "modules": [], "cables": []}
+}

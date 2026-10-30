@@ -1,0 +1,98 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "example",
+  "meta": {
+    "title": "Just chords on analog VCOs",
+    "note": "The Harmonics score is a float chip; Voltmeters bring it the LFO's voltages and Hz → V/OCT turns its frequencies into volts for four analog VCOs. The chords are pure while the VCOs are perfect: turn up DRIFT or TRACK on a VCO and they start to beat.",
+    "rate": 48000
+  },
+  "uses": {
+    "Harmonics": "5x7 in@0:phase in@6:f0 out@0:h1 out@2:h2 out@4:h3 out@6:h4",
+    "Hz → V/OCT": "3x3 in@1:in out@1:out",
+    "Mux4": "4x5 in@0:phase in@1:s1 in@2:s2 in@3:s3 in@4:s4 out@2:out",
+    "Scaled Voltmeter": "3x3 in@0:range in@1:in out@1:out"
+  },
+  "board": {
+    "nextId": 44,
+    "blocks": [
+      {"id": "b1", "type": "lfo", "x": 0, "y": 0, "params": {"rate": 0.5, "amp": 5}},
+      {"id": "b2", "type": "atten", "x": 5, "y": 0, "params": {"a1": 0.1, "o1": 0.5, "a2": 0, "o2": 5.450532610429138}},
+      {"id": "b3", "type": "voltmeter", "x": 10, "y": 0},
+      {"id": "b4", "type": "voltmeter", "x": 10, "y": 6},
+      {"id": "b5", "type": "comp", "def": "Harmonics", "x": 14, "y": 1},
+      {"id": "b6", "type": "comp", "def": "Hz → V/OCT", "x": 21, "y": 0},
+      {"id": "b7", "type": "comp", "def": "Hz → V/OCT", "x": 21, "y": 3},
+      {"id": "b8", "type": "comp", "def": "Hz → V/OCT", "x": 21, "y": 6},
+      {"id": "b9", "type": "comp", "def": "Hz → V/OCT", "x": 21, "y": 9},
+      {"id": "b10", "type": "clock", "x": 25, "y": 0, "params": {"bpm": 120, "pw": 0.6}},
+      {"id": "b11", "type": "adsr", "x": 30, "y": 0, "params": {"a": 0.02, "d": 0.4, "s": 0.6, "r": 0.2}},
+      {
+        "id": "b12",
+        "type": "vco",
+        "x": 0,
+        "y": 14,
+        "params": {"freq": 0, "fine": 0, "pw": 0.5, "fm": 0, "drift": 0, "track": 0}
+      },
+      {
+        "id": "b13",
+        "type": "vco",
+        "x": 7,
+        "y": 14,
+        "params": {"freq": 0, "fine": 0, "pw": 0.5, "fm": 0, "drift": 0, "track": 0}
+      },
+      {
+        "id": "b14",
+        "type": "vco",
+        "x": 14,
+        "y": 14,
+        "params": {"freq": 0, "fine": 0, "pw": 0.5, "fm": 0, "drift": 0, "track": 0}
+      },
+      {
+        "id": "b15",
+        "type": "vco",
+        "x": 21,
+        "y": 14,
+        "params": {"freq": 0, "fine": 0, "pw": 0.5, "fm": 0, "drift": 0, "track": 0}
+      },
+      {
+        "id": "b16",
+        "type": "mixer",
+        "x": 28,
+        "y": 14,
+        "params": {"l1": 0.5, "l2": 0.5, "l3": 0.5, "l4": 0.5, "master": 0.6}
+      },
+      {"id": "b17", "type": "vcf", "x": 35, "y": 14, "params": {"freq": 1800, "res": 0.2, "cv": 0, "drive": 1}},
+      {"id": "b18", "type": "vca", "x": 41, "y": 14, "params": {"level": 1, "resp": 0.5}},
+      {"id": "b19", "type": "comp", "def": "Scaled Voltmeter", "x": 46, "y": 19},
+      {"id": "b20", "type": "out", "x": 50, "y": 20, "name": "out"}
+    ],
+    "wires": [
+      {"id": "w21", "from": "b1.o2", "to": "b2.i0", "style": {"color": "#e8c547"}},
+      {"id": "w22", "from": "b2.o0", "to": "b3.i0", "style": {"color": "#e5603d"}},
+      {"id": "w23", "from": "b2.o1", "to": "b4.i0", "style": {"color": "#5ec8e5"}},
+      {"id": "w24", "from": "b3.o0", "to": "b5.i0", "path": [[12,1],[13,1],[14,1]]},
+      {"id": "w25", "from": "b4.o0", "to": "b5.i1", "path": [[12,7],[13,7],[14,7]]},
+      {"id": "w26", "from": "b5.o0", "to": "b6.i0", "path": [[18,1],[19,1],[20,1],[21,1]]},
+      {"id": "w27", "from": "b6.o0", "to": "b12.i0", "style": {"color": "#7bd389"}},
+      {"id": "w28", "from": "b12.o2", "to": "b16.i0", "style": {"color": "#c77dff"}},
+      {"id": "w29", "from": "b5.o1", "to": "b7.i0", "path": [[18,3],[19,3],[20,3],[20,4],[21,4]]},
+      {"id": "w30", "from": "b7.o0", "to": "b13.i0", "style": {"color": "#f28ab2"}},
+      {"id": "w31", "from": "b13.o2", "to": "b16.i1", "style": {"color": "#f0f0f0"}},
+      {"id": "w32", "from": "b5.o2", "to": "b8.i0", "path": [[18,5],[19,5],[20,5],[20,6],[20,7],[21,7]]},
+      {"id": "w33", "from": "b8.o0", "to": "b14.i0", "style": {"color": "#e8c547"}},
+      {"id": "w34", "from": "b14.o2", "to": "b16.i2", "style": {"color": "#e5603d"}},
+      {"id": "w35", "from": "b5.o3", "to": "b9.i0", "path": [[18,7],[18,8],[18,9],[18,10],[19,10],[20,10],[21,10]]},
+      {"id": "w36", "from": "b9.o0", "to": "b15.i0", "style": {"color": "#5ec8e5"}},
+      {"id": "w37", "from": "b15.o2", "to": "b16.i3", "style": {"color": "#7bd389"}},
+      {"id": "w38", "from": "b10.o0", "to": "b11.i0", "style": {"color": "#c77dff"}},
+      {"id": "w39", "from": "b11.o0", "to": "b18.i1", "style": {"color": "#f28ab2"}},
+      {"id": "w40", "from": "b16.o0", "to": "b17.i0", "style": {"color": "#f0f0f0"}},
+      {"id": "w41", "from": "b17.o0", "to": "b18.i0", "style": {"color": "#e8c547"}},
+      {"id": "w42", "from": "b18.o0", "to": "b19.i1", "style": {"color": "#e5603d"}},
+      {"id": "w43", "from": "b19.o0", "to": "b20.i0", "path": [[48,20],[49,20],[50,20]]}
+    ]
+  },
+  "defs": {},
+  "values": {"b19/port.i0": 5}
+}

@@ -1,0 +1,53 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "example",
+  "meta": {
+    "title": "Analog feedback loops",
+    "note": "Two VCOs frequency-modulate each other in a loop, and a ladder filter at high resonance whistles with no input. Loops like these are legal because every analog module is sampled at the clock edge; a loop of logic alone would need a flip-flop.",
+    "rate": 48000
+  },
+  "uses": {"Scaled Voltmeter": "3x3 in@0:range in@1:in out@1:out"},
+  "board": {
+    "nextId": 16,
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "vco",
+        "x": 0,
+        "y": 0,
+        "params": {"freq": -1, "fine": 0, "pw": 0.5, "fm": 0.35, "drift": 0, "track": 0}
+      },
+      {
+        "id": "b2",
+        "type": "vco",
+        "x": 7,
+        "y": 0,
+        "params": {"freq": -0.415, "fine": 0, "pw": 0.5, "fm": 0.5, "drift": 0, "track": 0}
+      },
+      {"id": "b3", "type": "lfo", "x": 14, "y": 0, "params": {"rate": 0.25, "amp": 1}},
+      {"id": "b4", "type": "vcf", "x": 19, "y": 0, "params": {"freq": 440, "res": 1.1, "cv": 1, "drive": 1}},
+      {
+        "id": "b5",
+        "type": "mixer",
+        "x": 0,
+        "y": 14,
+        "params": {"l1": 0.45, "l2": 0.35, "l3": 0.5, "l4": 0, "master": 0.8}
+      },
+      {"id": "b6", "type": "comp", "def": "Scaled Voltmeter", "x": 8, "y": 19},
+      {"id": "b7", "type": "out", "x": 12, "y": 20, "name": "out"}
+    ],
+    "wires": [
+      {"id": "w8", "from": "b1.o0", "to": "b2.i1", "style": {"color": "#e8c547"}},
+      {"id": "w9", "from": "b2.o0", "to": "b1.i1", "style": {"color": "#e5603d"}},
+      {"id": "w10", "from": "b3.o3", "to": "b4.i1", "style": {"color": "#5ec8e5"}},
+      {"id": "w11", "from": "b1.o2", "to": "b5.i0", "style": {"color": "#7bd389"}},
+      {"id": "w12", "from": "b2.o1", "to": "b5.i1", "style": {"color": "#c77dff"}},
+      {"id": "w13", "from": "b4.o0", "to": "b5.i2", "style": {"color": "#f28ab2"}},
+      {"id": "w14", "from": "b5.o0", "to": "b6.i1", "style": {"color": "#f0f0f0"}},
+      {"id": "w15", "from": "b6.o0", "to": "b7.i0", "path": [[10,20],[11,20],[12,20]]}
+    ]
+  },
+  "defs": {},
+  "values": {"b6/port.i0": 6.25}
+}

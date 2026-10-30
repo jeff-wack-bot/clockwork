@@ -1,6 +1,11 @@
-// Board view: nets drawn as traces between pads, ICs as packages, composite ICs
-// drawn with their own board inside. Geometry is cached as Path2D in board
-// units, so a frame costs one stroke per net, at any zoom and nesting depth.
+// Board view. Each kind of signal has its own look: float wires are PCB traces
+// between pads, coloured by value, with vias where they change layer (placed by
+// hand, or by the renderer where traces cross: G.renderLayout); fixed-point wires
+// are barcodes, one stripe per bit, white for 1 and black for 0; analog wires are
+// patch cables hanging between jacks. Atoms and gates are drawn as symbols,
+// analog modules as their panels, composite ICs with their own board inside.
+// Trace geometry is cached as Path2D in board units, so a frame costs one stroke
+// per net, at any zoom and nesting depth.
 (function (root) {
   'use strict';
   const G = root.GW;
@@ -68,13 +73,14 @@
       this.anchor = null;
       this.dirty = true;
       this.cache = new WeakMap();
+      this.rcache = new WeakMap();
       this.resize();
       // follow the canvas's real size, whatever changes the layout (window, panels, embedding)
       new ResizeObserver(() => { this.resize(); this.dirty = true; }).observe(canvas);
       const loop = () => {
         this.animate();
         if (this.app.style && this.app.style.dir === 'flow' && this.app.host && this.app.host.running) this.dirty = true;
-        if (this.dirty) { this.dirty = false; this.draw(); }
+        if (this.dirty && this.app.project) { this.dirty = false; this.draw(); }
         requestAnimationFrame(loop);
       };
       requestAnimationFrame(loop);
@@ -130,17 +136,36 @@
     rootFrame() { return { sheet: this.app.project.root, path: '', ox: 0, oy: 0, sc: 1, inst: null, parent: null, chain: [] }; }
     child(F, b) {
       const def = this.app.project.defs[b.def];
-      return { sheet: def, def, path: F.path + b.id + '/', ox: F.ox + b.x * F.sc, oy: F.oy + b.y * F.sc, sc: F.sc / def.s, inst: b, parent: F, chain: F.chain.concat([b.def]) };
+      const fp = G.footprint(b, this.app.project.defs), f = G.innerFit(def, fp.w, fp.h);
+      return { sheet: def, def, path: F.path + b.id + '/', ox: F.ox + (b.x + f.dx) * F.sc, oy: F.oy + (b.y + f.dy) * F.sc, sc: F.sc * f.k, inst: b, parent: F, chain: F.chain.concat([b.def]) };
     }
     extent(F) {
       const sh = F.sheet;
-      if (G.isDef(sh)) return { x0: F.ox, y0: F.oy, x1: F.ox + sh.fw * sh.s * F.sc, y1: F.oy + sh.fh * sh.s * F.sc };
-      const g = this.geom(sh);
-      return g.bbox || { x0: 0, y0: 0, x1: 30, y1: 20 };
+      if (G.isDef(sh)) { const n = G.inner(sh); return { x0: F.ox, y0: F.oy, x1: F.ox + n.w * F.sc, y1: F.oy + n.h * F.sc }; }
+      const g = this.geom(sh), bb = g.bbox || { x0: 0, y0: 0, x1: 30, y1: 20 };
+      const L = F.path === '' ? this.graphLayout() : null;
+      if (!L) return bb;
+      const out = Object.assign({}, bb);
+      for (const box of L.nodes.values()) { out.x0 = Math.min(out.x0, box.x - 1); out.y0 = Math.min(out.y0, box.y - 1); out.x1 = Math.max(out.x1, box.x + box.w + 1); out.y1 = Math.max(out.y1, box.y + box.h + 1); }
+      return out;
     }
+
+    // A board as the renderer draws it: the sheet plus, per net (keyed by its
+    // source pin), the cells its traces cover on each layer.
+    rendered(sheet) {
+      if (sheet.layout) return sheet;
+      const c = this.rcache.get(sheet);
+      if (c && c.ver === this.app.version) return c.r;
+      const L = G.renderLayout(sheet, this.app.project.defs);
+      const r = Object.assign({}, sheet, { top: L.top, bot: L.bot, regions: L.regions, layout: L, src: sheet });
+      this.rcache.set(sheet, { ver: this.app.version, r });
+      return r;
+    }
+    routes(sheet) { return this.rendered(sheet).layout.routes; }
 
     // Everything about a board that only changes when it is edited.
     geom(sheet) {
+      sheet = this.rendered(sheet);
       let g = this.cache.get(sheet);
       if (g && g.ver === this.app.version && g.ops === this.app.style.ops) return g;
       const defs = this.app.project.defs;
@@ -303,7 +328,16 @@
       }
       for (const rid in sheet.regions) { const kb = sheet.regions[rid].knob; if (kb) anchors[rid] = [kb.x, kb.y]; }
       for (const { b, fp } of blocks) grow(b.x, b.y, fp.w, fp.h);
-      g = { ver: this.app.version, ops: this.app.style.ops, occ, blocks, traces, taper, reach, chevrons, junctions, driven: new Set(drivers.keys()), all, vias, pads, anchors,
+      // a float net's look, from its wires: colour and width belong to the whole net
+      const netStyle = new Map();
+      for (const w of sheet.wires) {
+        if (!w.style || !sheet.regions[w.from]) continue;
+        const st = netStyle.get(w.from) || {};
+        if (w.style.color && !st.color) st.color = w.style.color;
+        if (w.style.width && !st.width) st.width = w.style.width;
+        netStyle.set(w.from, st);
+      }
+      g = { ver: this.app.version, ops: this.app.style.ops, occ, blocks, traces, taper, reach, chevrons, junctions, driven: new Set(drivers.keys()), all, vias, pads, anchors, netStyle,
         bbox: x0 === Infinity ? null : { x0: x0 - 1, y0: y0 - 1, x1: x1 + 1, y1: y1 + 1 } };
       this.cache.set(sheet, g);
       return g;
@@ -318,7 +352,12 @@
         const x = Math.floor(fx), y = Math.floor(fy);
         const o = this.geom(F.sheet).occ.get(G.key(x, y));
         const b = o && o.block;
-        if (b && b.type === 'comp' && defs[b.def] && this.cam.z * F.sc / defs[b.def].s >= ENTER_PX) { F = this.child(F, b); continue; }
+        // Zoomed in far enough, you are inside the block, except on one of its pins'
+        // tabs on the edge: a pin belongs to the board it sits on. (Only the tab: a
+        // pin's cell is a large part of the inside once you are working in there.)
+        const onTab = o && o.pad && (o.pad.dir === 'in' ? fx - x < 0.35 : fx - x > 0.65) && fy - y > 0.15 && fy - y < 0.85;
+        const bench = F.path === '' && this.app.benchBlock && this.app.benchBlock() === b;   // the block editor's block: always its inside
+        if (b && b.type === 'comp' && (!onTab || bench) && defs[b.def] && this.cam.z * F.sc * (() => { const q = G.footprint(b, defs); return G.innerFit(defs[b.def], q.w, q.h).k; })() >= ENTER_PX) { F = this.child(F, b); continue; }
         return { F, x, y, fx, fy, occ: o };
       }
       return null;
@@ -332,6 +371,7 @@
       ctx.fillStyle = '#101216'; ctx.fillRect(0, 0, this.W, this.H);
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       this.drawBoard(this.rootFrame());
+      this.drawGraph();
       this.drawOverlay();
     }
 
@@ -343,12 +383,12 @@
     screen() { this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); }
 
     drawBoard(F) {
-      const ctx = this.ctx, app = this.app, sh = F.sheet, px = this.cam.z * F.sc;
+      const ctx = this.ctx, app = this.app, sh = this.rendered(F.sheet), px = this.cam.z * F.sc;
       const g = this.geom(sh);
       const val = (rid) => app.valueOf(F.path + rid);
       const hot = app.hotRegion && app.hotRegion.path === F.path ? app.hotRegion.rid : null;
-      const sel = app.sel && app.sel.F.path === F.path && app.sel.F.sheet === sh ? app.sel : null;   // the selection, if it is on this board
-      const botActive = app.layer === G.BOT;
+      const sel = app.sel && app.sel.F.path === F.path && app.sel.F.sheet === F.sheet ? app.sel : null;   // the selection, if it is on this board
+      const botActive = false;   // the bottom layer is always drawn behind (layers are the renderer's)
       // trace widths are in board units, capped in pixels so an outer board's
       // traces don't swamp the inner board you have zoomed into
       const cap = (w, maxPx) => Math.min(w, maxPx / px);
@@ -357,7 +397,7 @@
       this.board(F);
       if (G.isDef(sh)) {
         ctx.fillStyle = '#171a20';
-        ctx.fillRect(0, 0, sh.fw * sh.s, sh.fh * sh.s);
+        const n = G.inner(sh); ctx.fillRect(0, 0, n.w, n.h);
       }
       if (px < SKETCH_PX) {
         // far away: the board's structure, one stroke per layer
@@ -371,6 +411,8 @@
       const kind = (rid) => app.netKind(F.path + rid);   // 's' register, 'n' wire, 'p' constant
       // One net's copper; with the taper style it is thick at the driver, thin at the readers.
       const strokeNet = (layer, rid, width) => {
+        const ns = g.netStyle.get(rid);
+        if (ns && ns.width) width *= ns.width;
         if (style.dir === 'taper') {
           g.taper[layer].get(rid).forEach((tp, k) => { ctx.lineWidth = width * TAPER[k]; ctx.stroke(tp); });
         } else { ctx.lineWidth = width; ctx.stroke(g.traces[layer].get(rid)); }
@@ -388,11 +430,11 @@
       // bottom layer: thin traces, under the packages
       const strokeLayer = (layer, width, alpha) => {
         ctx.globalAlpha = alpha;
-        for (const rid of g.traces[layer].keys()) { ctx.strokeStyle = colorOf(val(rid)); strokeNet(layer, rid, width); }
+        for (const rid of g.traces[layer].keys()) { const ns = g.netStyle.get(rid); ctx.strokeStyle = (ns && ns.color) || colorOf(val(rid)); strokeNet(layer, rid, width); }
         ctx.globalAlpha = 1;
       };
       const highlight = (layer, width) => {
-        for (const [rid, color] of [[hot, 'rgba(255,255,255,0.55)'], [sel && sel.region, '#f0a640']]) {
+        for (const [rid, color] of [[hot, 'rgba(255,255,255,0.55)'], [sel && sel.net, '#f0a640']]) {
           const p = rid && g.traces[layer].get(rid);
           if (p) { ctx.lineWidth = width; ctx.strokeStyle = color; ctx.stroke(p); }
         }
@@ -413,25 +455,23 @@
       registers(G.TOP, wCase);
       ctx.strokeStyle = '#08090c';
       if (style.dir === 'taper') for (const rid of g.traces.top.keys()) strokeNet(G.TOP, rid, wCase);
-      else { ctx.lineWidth = wCase; ctx.stroke(g.all.top); }
+      else { ctx.lineWidth = wCase; ctx.stroke(g.all.top); for (const [rid, ns] of g.netStyle) if (ns.width > 1 && g.traces.top.get(rid)) strokeNet(G.TOP, rid, wCase); }
       strokeLayer(G.TOP, wTop, botActive ? 0.35 : 1);
       ctx.globalAlpha = 1;
       if (botActive) strokeLayer(G.BOT, wBot, 0.9);
       this.drawDirection(F, g, px, wTop, wBot, cap);
       this.drawJunctions(F, g, px, wTop, cap);
       if (glyphs) { for (const { b, fp } of g.blocks) if (G.ATOMS[b.type]) this.drawPackage(F, b, fp, px); this.board(F); }
-      if (sel && sel.cells.size) {
-        // selected trace cells: white, joined where neighbours are selected too
-        const paths = { top: new Path2D(), bot: new Path2D() };
-        for (const c of sel.cells) {
-          const [l, k] = c.split(':'), [x, y] = G.unkey(k), p = paths[l];
-          if (!p) continue;
-          p.moveTo(x + 0.5, y + 0.5); p.lineTo(x + 0.5, y + 0.5);
-          for (const [nx, ny] of [[x + 1, y], [x, y + 1]]) if (sel.cells.has(l + ':' + G.key(nx, ny)) && sh[l][G.key(nx, ny)] === sh[l][k]) { p.moveTo(x + 0.5, y + 0.5); p.lineTo(nx + 0.5, ny + 0.5); }
+      this.drawBarcodes(F, sh, px, sel);
+      this.board(F);
+      if (sel && sel.wires.size) {
+        // selected wires: their traces in white, on top
+        const p = new Path2D(), routes = sh.layout.routes;
+        for (const id of sel.wires) {
+          const r = routes.get(id);
+          if (r) r.forEach(([x, y], i) => (i ? p.lineTo(x + 0.5, y + 0.5) : p.moveTo(x + 0.5, y + 0.5)));
         }
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = wBot * 0.6; ctx.stroke(paths.bot);
-        ctx.lineWidth = wTop * 0.5; ctx.stroke(paths.top);
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = wTop * 0.45; ctx.stroke(p);
       }
 
       // pads and vias
@@ -439,6 +479,16 @@
         ctx.lineWidth = cap(0.08, 2);
         for (const [x, y, o] of g.pads) {
           if (style.ops !== 'chip' && o.block && G.ATOMS[o.block.type]) continue;
+          if (o.block && G.MODULES[o.block.type] && G.MODULES[o.block.type].panel) continue;   // jacks are on the panel
+          const dom = o.pad.dom || 'float';
+          if (dom === 'analog') { this.drawJack(x + 0.5, y + 0.5, 0.36, px); this.board(F); continue; }
+          if (dom === 'fixed') {
+            const e = o.port ? G.ep('port', o.pad.dir, o.pad.idx) : G.ep(o.block.id, o.pad.dir, o.pad.idx), v = val(e);
+            ctx.fillStyle = v === undefined ? '#14161b' : v % 2 ? '#f4f4f4' : '#050506';
+            ctx.strokeStyle = o.port ? '#9fd6a8' : '#bfc5d2';
+            ctx.fillRect(x + 0.22, y + 0.22, 0.56, 0.56); ctx.strokeRect(x + 0.22, y + 0.22, 0.56, 0.56);
+            continue;
+          }
           const rid = sh.top[G.key(x, y)];
           ctx.fillStyle = rid ? colorOf(val(rid)) : '#14161b';
           ctx.strokeStyle = o.port ? '#9fd6a8' : '#c9a35b';
@@ -465,23 +515,38 @@
           ctx.fillText(o.pad.dir === 'in' ? '▶ ' + o.pad.name : o.pad.name + ' ▶', o.pad.dir === 'in' ? p.x + px : p.x, p.y - px * 0.4);
         }
       }
-      for (const rid in sh.regions) {
-        const kb = sh.regions[rid].knob;
-        if (kb) { const p = S(kb.x, kb.y); if (onScreen(p, px)) this.drawKnob(F, rid, sh.regions[rid], p, px); }
+      // knobs: on Constant blocks, and on input ports with a default
+      for (const b of F.sheet.blocks) {
+        if (b.type !== 'const' && b.type !== 'volts' && b.type !== 'bits') continue;
+        const p = S(b.x, b.y);
+        if (!onScreen(p, px * 4)) continue;
+        if (b.type === 'bits') this.drawBitsValue(F, b, p, px);
+        else if (b.knob) this.drawKnob(F.path + b.id, F.path + G.ep(b.id, 'out', 0), b.knob, b.value, p, px, b.type === 'volts');
+        else this.drawConstValue(F.path + G.ep(b.id, 'out', 0), b.value, p, px, b.type === 'volts');
+      }
+      if (G.isDef(F.sheet)) {
+        for (const pad of G.innerPads(F.sheet)) {
+          const port = pad.dir === 'in' && G.portsOf(F.sheet, 'in')[pad.idx];
+          if (!port || !port.knob) continue;
+          const p = S(pad.x + 1, pad.y), k = G.ep('port', 'in', pad.idx);
+          if (onScreen(p, px)) this.drawKnob(F.path + k, F.path + k, port.knob, port.value || 0, p, px);
+        }
       }
       if (px >= 18) {
         ctx.font = `600 ${Math.min(14, px * 0.36)}px ui-monospace, monospace`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        const constNet = (rid) => { const e = G.parseEp(rid), b = e && F.sheet.blocks.find((x) => x.id === e.b); return !!(b && b.type === 'const'); };
         for (const rid in g.anchors) {
-          if (!sh.regions[rid]) continue;
+          if (!sh.regions[rid] || constNet(rid)) continue;   // a Constant shows its own value
           const [x, y] = g.anchors[rid], p = S(x, y);
           if (!onScreen(p, 50)) continue;
-          const s = fmt(val(rid)), ty = sh.regions[rid].knob ? p.y + px * 1.15 : p.y + px / 2;
+          const s = fmt(val(rid)), ty = p.y + px / 2;
           const w = ctx.measureText(s).width + 6;
           ctx.fillStyle = 'rgba(10,10,14,0.7)'; ctx.fillRect(p.x + px / 2 - w / 2, ty - 8, w, 16);
           ctx.fillStyle = '#f2f4f8'; ctx.fillText(s, p.x + px / 2, ty);
         }
       }
+      this.drawCables(F, px, sel);
     }
 
     // Direction cues: chevrons pointing downstream, or dashes flowing away from the driver.
@@ -540,7 +605,7 @@
 
     // An atom drawn as a signal-flow symbol, or as a special via where its traces meet.
     drawOp(F, b, fp, px, outline) {
-      const ctx = this.ctx, app = this.app, sh = F.sheet, t = G.ATOMS[b.type], via = app.style.ops === 'via';
+      const ctx = this.ctx, app = this.app, sh = this.rendered(F.sheet), t = G.ATOMS[b.type], via = app.style.ops === 'via';
       const val = (p) => { const rid = sh.top[G.key(p.x, p.y)]; return rid ? app.valueOf(F.path + rid) : undefined; };
       const ins = fp.pads.filter((p) => p.dir === 'in'), outs = fp.pads.filter((p) => p.dir === 'out');
       // work in the block's own, unrotated frame
@@ -566,6 +631,10 @@
         ctx.moveTo(mx - h * 0.8, my - h); ctx.lineTo(mx + h * 0.9, my); ctx.lineTo(mx - h * 0.8, my + h); ctx.closePath();
       } else if (b.type === 'delay') {     // flip-flop: a square with a clock notch
         ctx.rect(mx - R, my - R * 0.8, 2 * R, 1.6 * R);
+      } else if (b.type === 'table') {     // a ROM: a box with its curve in it
+        ctx.rect(0.75, 0.3, t.w - 1.5, t.h - 0.6);
+      } else if (b.type === 'exp2' || b.type === 'log2') {
+        ctx.rect(mx - 0.62, my - 0.4, 1.24, 0.8);
       } else ctx.arc(mx, my, R, 0, 7);     // summing junction / multiplier: a circle
       ctx.fill(); ctx.stroke();
       ctx.strokeStyle = glyph; ctx.lineWidth = lw(via ? 0.07 : 0.08, 2.5);
@@ -574,6 +643,13 @@
       if (b.type === 'add') { ctx.moveTo(mx - g, my); ctx.lineTo(mx + g, my); ctx.moveTo(mx, my - g); ctx.lineTo(mx, my + g); }
       if (b.type === 'mul') { const q = g * 0.75; ctx.moveTo(mx - q, my - q); ctx.lineTo(mx + q, my + q); ctx.moveTo(mx + q, my - q); ctx.lineTo(mx - q, my + q); }
       if (b.type === 'delay') { ctx.moveTo(mx - R * 0.35, my + R * 0.8); ctx.lineTo(mx, my + R * 0.35); ctx.lineTo(mx + R * 0.35, my + R * 0.8); }
+      if (b.type === 'table') {
+        const pts = G.tablePoints(b), x0 = pts[0][0], x1 = pts[pts.length - 1][0];
+        let y0 = Math.min(...pts.map((q) => q[1])), y1 = Math.max(...pts.map((q) => q[1]));
+        if (y1 - y0 < 1e-12) { y0 -= 1; y1 += 1; }
+        const X = (x) => 1 + (t.w - 2) * (x - x0) / ((x1 - x0) || 1), Y = (y) => t.h - 0.55 - (t.h - 1.1) * (y - y0) / (y1 - y0);
+        pts.forEach((q, i) => (i ? ctx.lineTo(X(q[0]), Y(q[1])) : ctx.moveTo(X(q[0]), Y(q[1]))));
+      }
       ctx.stroke();
       if (px * (via ? 0.25 : 0.4) >= 6) {
         // small text marks: + and − on the comparator, 1 and 0 on the switch, z⁻¹ on the flip-flop
@@ -583,6 +659,7 @@
         if (b.type === 'gt') { ctx.fillText('+', mx - R * 0.35, my - R * 0.45); ctx.fillText('−', mx - R * 0.35, my + R * 0.45); }
         if (b.type === 'switch') { const h0 = via ? 0.3 : 0.7; ctx.fillText('1', mx - 0.15, my - h0); ctx.fillText('0', mx - 0.15, my + h0); }
         if (b.type === 'delay' && !via) ctx.fillText('z⁻¹', mx, my - 0.06);
+        if (b.type === 'exp2' || b.type === 'log2') { ctx.font = `600 ${b.type === 'exp2' ? 0.42 : 0.3}px ui-monospace, monospace`; ctx.fillText(t.sym, mx, my + 0.02); }
       }
     }
 
@@ -597,10 +674,8 @@
       if (b.type === 'comp') {
         const def = defs[b.def];
         ctx.fillStyle = '#15181e'; ctx.fillRect(b.x, b.y, fp.w, fp.h);
-        // pins straddling the package edge
-        ctx.fillStyle = '#c9a35b';
-        for (const p of fp.pads) ctx.fillRect(p.dir === 'in' ? p.x - 0.12 : p.x + 0.88, p.y + 0.3, 0.24, 0.4);
-        if (def && px / def.s >= MIN_INNER) {
+        // pins straddling the package edge, in their kind's colour
+        if (def && px * G.innerFit(def, fp.w, fp.h).k >= MIN_INNER) {
           ctx.save(); ctx.beginPath(); ctx.rect(b.x, b.y, fp.w, fp.h); ctx.clip();
           this.drawBoard(this.child(F, b));
           ctx.restore();
@@ -608,9 +683,24 @@
         }
         ctx.lineWidth = Math.min(outline ? 0.08 : 0.05, (outline ? 3 : 1.5) / px); ctx.strokeStyle = outline || '#7a6640';
         ctx.strokeRect(b.x, b.y, fp.w, fp.h);
+        const PIN = { float: '#d9b36c', fixed: '#e8e8e8', analog: '#5ec8e5' };
+        for (const p of fp.pads) {
+          ctx.fillStyle = PIN[p.dom] || PIN.float;
+          ctx.fillRect(p.dir === 'in' ? p.x - 0.22 : p.x + 0.78, p.y + 0.24, 0.44, 0.52);
+          ctx.strokeStyle = '#0b0c10'; ctx.lineWidth = Math.min(0.04, 1 / px);
+          ctx.strokeRect(p.dir === 'in' ? p.x - 0.22 : p.x + 0.78, p.y + 0.24, 0.44, 0.52);
+        }
         this.screen();
+        if (px >= 14 && !(def && px * G.innerFit(def, fp.w, fp.h).k >= ENTER_PX)) {   // pin names, just outside the edge
+          ctx.font = `${Math.min(12, px * 0.34)}px system-ui`; ctx.textBaseline = 'middle'; ctx.fillStyle = '#c3c8d4';
+          for (const p of fp.pads) {
+            const q = this.toScreen(F.ox + (p.dir === 'in' ? p.x - 0.3 : p.x + 1.3) * F.sc, F.oy + (p.y + 0.5) * F.sc);
+            ctx.textAlign = p.dir === 'in' ? 'right' : 'left';
+            ctx.fillText(p.name, q.x, q.y);
+          }
+        }
         if (px >= 3) {
-          const ipx = def ? px / def.s : 0;
+          const ipx = def ? px * G.innerFit(def, fp.w, fp.h).k : 0;
           ctx.fillStyle = '#f0a640'; ctx.textBaseline = 'bottom'; ctx.textAlign = 'left';
           ctx.font = `600 ${Math.max(9, Math.min(16, px * 0.45))}px system-ui`;
           ctx.fillText(b.def + (ipx >= ENTER_PX ? '' : '  ' + b.id), a.x, a.y - 2);
@@ -618,22 +708,24 @@
         return;
       }
       const t = G.info(b.type);
-      if (G.ATOMS[b.type] && app.style.ops !== 'chip') { this.drawOp(F, b, fp, px, outline); this.screen(); return; }
-      if (b.type === 'sample') {
-        // a stack: a few cards peeking out behind the one on top
-        ctx.lineWidth = Math.min(0.05, 1.5 / px); ctx.strokeStyle = '#3d5a4a'; ctx.fillStyle = '#16211b';
-        for (const o of [0.36, 0.24]) { ctx.fillRect(b.x + 0.12 + o, b.y + 0.12 - o * 0.6, fp.w - 0.36 - o, fp.h - 0.24); ctx.strokeRect(b.x + 0.12 + o, b.y + 0.12 - o * 0.6, fp.w - 0.36 - o, fp.h - 0.24); }
+      if (b.type === 'const' || b.type === 'volts' || b.type === 'bits') {   // drawn with the knobs, on top of its pad
+        if (outline) { this.board(F); ctx.lineWidth = Math.min(0.12, 3 / px); ctx.strokeStyle = outline; ctx.strokeRect(b.x - 0.05, b.y - 0.05, 1.1, 1.1); }
+        this.screen(); return;
       }
-      ctx.fillStyle = b.type === 'delay' ? '#1f2d40' : b.type === 'sample' ? '#1a2620' : G.SINKS[b.type] ? '#2e2333' : '#242833';
+      const mod = G.MODULES[b.type];
+      if (mod && mod.panel) { this.drawPanel(F, b, fp, px, outline); this.screen(); return; }
+      if (mod && mod.chip) { this.drawConverter(F, b, fp, px, outline); this.screen(); return; }
+      if (G.GATES[b.type]) { this.drawGate(F, b, fp, px, outline); this.screen(); return; }
+      if (G.IO[b.type]) { this.drawSocket(F, b, fp, px, outline); this.screen(); return; }
+      if (G.ATOMS[b.type] && app.style.ops !== 'chip') { this.drawOp(F, b, fp, px, outline); this.screen(); return; }
+      ctx.fillStyle = b.type === 'delay' ? '#1f2d40' : '#242833';
       ctx.fillRect(b.x + 0.12, b.y + 0.12, fp.w - 0.24, fp.h - 0.24);
       ctx.lineWidth = Math.min(outline ? 0.1 : 0.05, (outline ? 3 : 1.5) / px); ctx.strokeStyle = outline || '#59607a';
       ctx.strokeRect(b.x + 0.12, b.y + 0.12, fp.w - 0.24, fp.h - 0.24);
-      if (b.type === 'scope') { this.screen(); this.drawScope(F, b, a, w, h, px); return; }
-      if (b.type === 'sample') { this.screen(); this.drawSample(F, b, a, w, h, px); return; }
       this.screen();
       if (px >= 5) {
         ctx.fillStyle = b.type === 'delay' ? '#5ec8e5' : '#f0a640';
-        ctx.font = `600 ${Math.min(px * 1.1, h * 0.7)}px ui-monospace, monospace`;
+        ctx.font = `600 ${Math.min(px * 1.1, h * 0.7, w / Math.max(2, t.sym.length) * 1.3)}px ui-monospace, monospace`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(t.sym, a.x + w / 2 + (fp.w === 3 ? px * 0.25 : 0), a.y + h / 2);
       }
@@ -644,12 +736,14 @@
       }
     }
 
-    drawKnob(F, rid, reg, p, px) {
-      const ctx = this.ctx, k = reg.knob, st = this.app.knobState(F.path + rid);
+    // A knob at screen cell p: its state key (for "overridden"/"written") and the
+    // pin whose value it shows.
+    drawKnob(stateKey, valueKey, k, fallback, p, px, volts) {
+      const ctx = this.ctx, st = this.app.knobState(stateKey);
       const cx = p.x + px / 2, cy = p.y + px / 2;
       if (px < 7) { ctx.fillStyle = st === 'ok' ? '#f0a640' : '#6b7080'; ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3); return; }
-      const v = this.app.valueOf(F.path + rid);
-      const frac = knobFrac(k, v === undefined ? reg.value : v);
+      const v = st === 'ok' ? this.app.valueOf(valueKey) : fallback;
+      const frac = knobFrac(k, v === undefined ? fallback : v);
       const r = px * 0.45;
       ctx.fillStyle = '#1e2129'; ctx.strokeStyle = '#4a5163'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill(); ctx.stroke();
@@ -664,79 +758,422 @@
         ctx.moveTo(cx - r * 0.6, cy - r * 0.6); ctx.lineTo(cx + r * 0.6, cy + r * 0.6);
         ctx.moveTo(cx + r * 0.6, cy - r * 0.6); ctx.lineTo(cx - r * 0.6, cy + r * 0.6); ctx.stroke();
       }
-      if (px >= 16 && k.label) {
-        ctx.fillStyle = st === 'ok' ? '#ffd28a' : '#8a90a0'; ctx.font = `${Math.min(13, px * 0.32)}px system-ui`;
+      if (px >= 16 && (k.label || volts)) {
+        ctx.fillStyle = st === 'ok' ? (volts ? '#9fe3f2' : '#ffd28a') : '#8a90a0'; ctx.font = `${Math.min(13, px * 0.32)}px system-ui`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-        ctx.fillText(k.label + (st === 'overridden' ? ' (set outside)' : st === 'written' ? ' (written)' : ''), cx, p.y - 1);
+        ctx.fillText((k.label ? k.label + ' ' : '') + (volts ? fmt(v === undefined ? fallback : v) + ' V' : '') + (st === 'overridden' ? ' (set outside)' : st === 'written' ? ' (written)' : ''), cx, p.y - 1);
       }
     }
+    // A Constant without a knob: its value in a small tag.
+    drawConstValue(valueKey, fallback, p, px, volts) {
+      const ctx = this.ctx, v = this.app.valueOf(valueKey), cx = p.x + px / 2, cy = p.y + px / 2;
+      const st = this.app.compiled && this.app.compiled.knobState;
+      ctx.fillStyle = '#c9a35b';
+      if (px < 9) { ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3); return; }
+      const t = fmt(v === undefined ? fallback : v) + (volts ? ' V' : '');
+      ctx.font = `600 ${Math.min(13, px * 0.42)}px ui-monospace, monospace`;
+      const w = Math.max(px * 0.8, ctx.measureText(t).width + 6), h = Math.min(px * 0.8, 18);
+      ctx.fillStyle = volts ? '#13262c' : '#2a2416'; ctx.strokeStyle = volts ? '#5ec8e5' : '#c9a35b'; ctx.lineWidth = 1;
+      ctx.fillRect(cx - w / 2, cy - h / 2, w, h); ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+      ctx.fillStyle = '#f2e3c2'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(t, cx, cy + 0.5);
+      void st;
+    }
 
-    // The whole song at a glance; the part already emitted is lit, the playhead is the read position.
-    drawSample(F, b, a, w, h, px) {
-      const ctx = this.ctx, app = this.app;
-      const e = b.sample && GW.Samples && GW.Samples.get(b.sample);
-      const x0 = a.x + px * 0.4, x1 = a.x + w - px * 1.1, y0 = a.y + px * 0.4, y1 = a.y + h - px * 0.4;
-      ctx.fillStyle = '#0d1310'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    // ---- PipeWire: the other programs' nodes beside the design, and the links -----------------
+    // This design's ports are its sockets: an Out's PipeWire end is its tip, an In's its tail.
+    socketPoints() {
+      const out = [];
+      for (const b of this.app.project.root.blocks) {
+        if (b.type === 'out') out.push({ b, dir: 'out', name: b.name || 'out', at: [b.x + 3, b.y + 0.5] });
+        if (b.type === 'in') out.push({ b, dir: 'in', name: b.name || 'in', at: [b.x, b.y + 0.5] });
+      }
+      return out;
+    }
+    graphLayout() {
+      const br = this.app.bridge;
+      if (!br || !br.connected) return null;
+      const g = this.geom(this.app.project.root), bb = g.bbox || { x0: 0, y0: 0, x1: 20, y1: 10 };
+      return br.place(bb);
+    }
+    linkPath(a, b) {
+      const dx = Math.max(3, Math.abs(b[0] - a[0]) / 2);
+      return { a, b, c1: [a[0] + dx, a[1]], c2: [b[0] - dx, b[1]] };
+    }
+    bez3(p, t) {
+      const u = 1 - t;
+      return [0, 1].map((k) => u * u * u * p.a[k] + 3 * u * u * t * p.c1[k] + 3 * u * t * t * p.c2[k] + t * t * t * p.b[k]);
+    }
+    // What of the graph is at a root-board point: { port } or { link } or { node }, or null.
+    graphHit(fx, fy) {
+      const L = this.graphLayout();
+      if (!L || fx === undefined) return null;
+      const br = this.app.bridge, tol = Math.max(0.3, 5 / this.cam.z);
+      for (const q of L.ports.values()) if (Math.hypot(q.x - fx, q.y - fy) < Math.max(0.45, tol)) return { port: q.p };
+      const socks = this.socketPoints();
+      for (const l of br.graph.links) {
+        const a = br.portPoint(l.out, socks), b = br.portPoint(l.in, socks);
+        if (!a || !b) continue;
+        const p = this.linkPath(a, b);
+        for (let t = 0.03; t <= 0.97; t += 1 / 40) { const q = this.bez3(p, t); if (Math.hypot(q[0] - fx, q[1] - fy) < tol) return { link: l }; }
+      }
+      for (const box of L.nodes.values()) if (fx >= box.x && fx <= box.x + box.w && fy >= box.y && fy <= box.y + box.h) return { node: box.n };
+      return null;
+    }
+    drawGraph() {
+      const L = this.graphLayout();
+      if (!L) return;
+      const ctx = this.ctx, app = this.app, br = app.bridge, F = this.rootFrame(), px = this.cam.z;
+      const socks = this.socketPoints();
+      this.board(F);
+      for (const box of L.nodes.values()) {
+        ctx.fillStyle = '#161b22'; ctx.strokeStyle = '#3d4656'; ctx.lineWidth = Math.min(0.06, 1.5 / px);
+        roundRect(ctx, box.x, box.y, box.w, box.h, 0.4); ctx.fill(); ctx.stroke();
+      }
+      // links: green where this design is one end
+      ctx.lineCap = 'round';
+      for (const l of br.graph.links) {
+        const a = br.portPoint(l.out, socks), b = br.portPoint(l.in, socks);
+        if (!a || !b) continue;
+        const p = this.linkPath(a, b), mine = [l.out, l.in].some((id) => { const q = br.portOf(id); return q && q.node === br.graph.self; });
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.bezierCurveTo(p.c1[0], p.c1[1], p.c2[0], p.c2[1], b[0], b[1]);
+        ctx.lineWidth = Math.min(0.22, 3 / px) * (app.pwSel === l.id ? 1.8 : 1);
+        ctx.strokeStyle = app.pwSel === l.id ? '#ffffff' : mine ? '#6fdc8c' : '#7a8496'; ctx.stroke();
+      }
+      const d = app.drag;
+      if (d && d.kind === 'pwlink' && d.at) {
+        const a = br.portPoint(d.port.id, socks) || [0, 0], b = [d.at.x, d.at.y], out = d.port.dir === 'out';
+        const p = out ? this.linkPath(a, b) : this.linkPath(b, a);
+        ctx.setLineDash([0.4, 0.3]); ctx.lineWidth = Math.min(0.2, 3 / px); ctx.strokeStyle = '#6fdc8c';
+        ctx.beginPath(); ctx.moveTo(p.a[0], p.a[1]); ctx.bezierCurveTo(p.c1[0], p.c1[1], p.c2[0], p.c2[1], p.b[0], p.b[1]); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      for (const q of L.ports.values()) {
+        ctx.fillStyle = q.p.dir === 'out' ? '#6fdc8c' : '#5ec8e5';
+        ctx.beginPath(); ctx.arc(q.x, q.y, 0.28, 0, 7); ctx.fill();
+      }
+      for (const s of socks) if (br.selfPort(s.dir, s.name)) { ctx.fillStyle = '#6fdc8c'; ctx.beginPath(); ctx.arc(s.at[0], s.at[1], 0.22, 0, 7); ctx.fill(); }
+      for (const box of L.nodes.values()) {
+        const n = box.n;
+        this.label(F, (n.desc || n.name).slice(0, 28), box.x + 0.4, box.y + 0.75, 0.5, '#e8ebf2', 'left', '600');
+        this.label(F, n.cls || n.app || '', box.x + 0.4, box.y + 1.4, 0.32, '#8a90a0', 'left');
+      }
+      for (const q of L.ports.values()) this.label(F, q.p.name, q.p.dir === 'out' ? q.x - 0.45 : q.x + 0.45, q.y, 0.34, '#c3c8d4', q.p.dir === 'out' ? 'right' : 'left');
+      this.screen();
+    }
+
+    // ---- fixed point: barcodes ----------------------------------------------------------
+    // A bus is a ribbon with one stripe per bit, white for 1 and black for 0, the low
+    // bit on the left of the way the value flows, following its route with square corners.
+    drawBarcodes(F, sh, px, sel) {
+      const ctx = this.ctx, app = this.app, defs = app.project.defs, routes = sh.layout.routes;
+      const fixed = F.sheet.wires.filter((w) => G.domainAt(F.sheet, defs, w.from) === 'fixed' && routes.get(w.id));
+      if (!fixed.length) return;
+      this.board(F);
+      ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+      for (const w of fixed) {
+        const r = routes.get(w.id), key = F.path + w.from;
+        const n = Math.max(1, (app.compiled && app.compiled.widths[key]) || 1), v = app.valueOf(key);
+        const sw = Math.min(0.13, 0.66 / n, 16 / px / n), half = n * sw / 2;   // capped on screen, like traces, when zoomed into a block
+        const pts = r.map(([x, y]) => [x + 0.5, y + 0.5]);
+        const line = (o) => {   // the route offset sideways by o (left of travel positive), mitred at the corners
+          ctx.beginPath();
+          for (let i = 0; i < pts.length; i++) {
+            const a = pts[Math.max(0, i - 1)], b = pts[i], c = pts[Math.min(pts.length - 1, i + 1)];
+            const d1 = i > 0 ? [b[0] - a[0], b[1] - a[1]] : [c[0] - b[0], c[1] - b[1]];
+            const d2 = i < pts.length - 1 ? [c[0] - b[0], c[1] - b[1]] : d1;
+            const n1 = [d1[1], -d1[0]], n2 = [d2[1], -d2[0]];
+            const same = n1[0] === n2[0] && n1[1] === n2[1];
+            const x = b[0] + o * (same ? n1[0] : n1[0] + n2[0]), y = b[1] + o * (same ? n1[1] : n1[1] + n2[1]);
+            i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+          }
+        };
+        const picked = sel && sel.wires.has(w.id);
+        const edge = (w.style && w.style.color) || (sel && sel.net === w.from ? '#f0a640' : '#5a6070');
+        ctx.strokeStyle = picked ? '#ffffff' : edge; ctx.lineWidth = 2 * half + Math.max(0.05, Math.min(0.12, 2 / px));
+        line(0); ctx.stroke();
+        if (px * sw < 1.2) { ctx.strokeStyle = '#8a8f9c'; ctx.lineWidth = 2 * half; line(0); ctx.stroke(); continue; }
+        for (let k = 0; k < n; k++) {
+          const bit = v === undefined ? 0 : Math.floor(v / Math.pow(2, k)) % 2;
+          ctx.strokeStyle = bit ? '#f4f4f4' : '#050506'; ctx.lineWidth = sw * 1.02;
+          line(half - (k + 0.5) * sw); ctx.stroke();
+        }
+      }
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    }
+
+    // ---- analog: patch cables -------------------------------------------------------------
+    // Where a cable plugs in: the jack's centre (exact on a panel), else the pin's cell.
+    jackPoint(sheet, e) {
+      const p = G.pinOf(sheet, this.app.project.defs, e);
+      if (!p) return null;
+      return p.fx !== undefined ? [p.fx, p.fy] : [p.x + 0.5, p.y + 0.5];
+    }
+    // A cable hangs under its own weight: a quadratic curve whose middle sags by `droop`.
+    cablePath(a, b, droop) {
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]), sag = (droop === undefined ? 1 : droop) * Math.min(9, 0.6 + d * 0.22);
+      return { a, b, c: [(a[0] + b[0]) / 2, Math.max(a[1], b[1]) + sag] };
+    }
+    bez(p, t) {
+      const u = 1 - t;
+      return [u * u * p.a[0] + 2 * u * t * p.c[0] + t * t * p.b[0], u * u * p.a[1] + 2 * u * t * p.c[1] + t * t * p.b[1]];
+    }
+    cablesOf(F) {
+      const defs = this.app.project.defs, out = [];
+      F.sheet.wires.forEach((w, i) => {
+        if (G.domainAt(F.sheet, defs, w.from) !== 'analog') return;
+        const a = this.jackPoint(F.sheet, w.from), b = this.jackPoint(F.sheet, w.to);
+        if (a && b) out.push({ w, i, p: this.cablePath(a, b, w.style && w.style.droop) });
+      });
+      return out;
+    }
+    // The cable under a point of frame F (board units), topmost first.
+    cableAt(F, fx, fy) {
+      if (fx === undefined) return null;
+      const tol = Math.max(0.22, 5 / (this.cam.z * F.sc)), cs = this.cablesOf(F);
+      for (let n = cs.length - 1; n >= 0; n--) {
+        for (let t = 0.04; t <= 0.96; t += 1 / 40) { const q = this.bez(cs[n].p, t); if (Math.hypot(q[0] - fx, q[1] - fy) < tol) return cs[n].w; }
+      }
+      return null;
+    }
+    strokeCable(p, color, hot, px) {
+      const ctx = this.ctx, wd = Math.min(0.32, Math.max(0.16, 3 / px));
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(p.a[0], p.a[1]); ctx.quadraticCurveTo(p.c[0], p.c[1], p.b[0], p.b[1]);
+      ctx.lineWidth = wd * (hot ? 1.9 : 1.45); ctx.strokeStyle = hot ? '#ffffff' : 'rgba(0,0,0,0.55)'; ctx.stroke();
+      ctx.lineWidth = wd; ctx.strokeStyle = color; ctx.stroke();
+      for (const e of [p.a, p.b]) {
+        ctx.fillStyle = color; ctx.beginPath(); ctx.arc(e[0], e[1], 0.3, 0, 7); ctx.fill();
+        ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.beginPath(); ctx.arc(e[0], e[1], 0.14, 0, 7); ctx.fill();
+      }
+    }
+    drawCables(F, px, sel) {
+      const ctx = this.ctx, app = this.app, d = app.drag;
+      const cs = this.cablesOf(F);
+      const wireDrag = d && d.kind === 'wire' && d.dom === 'analog' && d.F.sheet === F.sheet ? d : null;
+      if (!cs.length && !wireDrag) return;
+      this.board(F);
+      ctx.globalAlpha = px < 4 ? 0.6 : 0.92;
+      for (const { w, i, p } of cs) {
+        const hot = !!(sel && sel.wires.has(w.id));
+        this.strokeCable(p, (w.style && w.style.color) || G.CABLE_COLORS[i % G.CABLE_COLORS.length], hot, px);
+      }
+      ctx.globalAlpha = 1;
+      if (wireDrag && wireDrag.at) {
+        const a = [wireDrag.start.fx !== undefined ? wireDrag.start.fx : wireDrag.start.x + 0.5, wireDrag.start.fy !== undefined ? wireDrag.start.fy : wireDrag.start.y + 0.5];
+        const b = wireDrag.target ? this.jackPoint(F.sheet, wireDrag.target) : [wireDrag.at.x, wireDrag.at.y];
+        const style = wireDrag.picked && wireDrag.picked.style;
+        const color = (style && style.color) || G.CABLE_COLORS[F.sheet.wires.filter((x) => x.style && x.style.color).length % G.CABLE_COLORS.length];
+        this.strokeCable(wireDrag.from ? this.cablePath(a, b, style && style.droop) : this.cablePath(b, a, style && style.droop), color, false, px);
+      }
+      this.screen();
+    }
+
+    // ---- analog modules: panels with knobs and jacks ----------------------------------------
+    drawPanel(F, b, fp, px, outline) {
+      const ctx = this.ctx, app = this.app, m = G.MODULES[b.type], lay = m.panel.lay, k = m.panel.scale;
+      const x = b.x, y = b.y, w = fp.w, h = G.Analog.PANEL_H * k;
+      this.board(F);
+      const grad = ctx.createLinearGradient(x, y, x, y + h);
+      grad.addColorStop(0, shade(m.color, 18)); grad.addColorStop(1, shade(m.color, -6));
+      ctx.fillStyle = grad; ctx.fillRect(x + 0.03, y, w - 0.06, h);
+      ctx.strokeStyle = outline || 'rgba(255,255,255,0.14)'; ctx.lineWidth = Math.min(outline ? 0.12 : 0.04, (outline ? 3 : 1) / px);
+      ctx.strokeRect(x + 0.03, y, w - 0.06, h);
       if (px < 3) return;
-      const pl = app.running && app.running.players.find((x) => x.path === F.path + b.id);
-      const at = pl && app.snap && app.snap.v ? app.snap.v[pl.v] || 0 : 0;
-      const label = (txt, color) => {
-        if (px < 8) return;
-        ctx.fillStyle = color; ctx.font = `${Math.min(12, px * 0.42)}px system-ui`;
-        ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(txt, x0 + 4, y0 + 3);
-      };
-      if (!e) {
-        label(!b.sample ? 'drop a WAV here, or double-click' : app.missing && app.missing.has(b.sample) ? 'WAV not stored here: load it again' : 'loading…', '#6d8a75');
+      ctx.fillStyle = '#9aa0ab';
+      for (const [cx, cy] of [[x + 0.45, y + 0.3], [x + w - 0.45, y + h - 0.3]]) { ctx.beginPath(); ctx.arc(cx, cy, 0.15, 0, 7); ctx.fill(); }
+      if (lay.plate) { ctx.fillStyle = 'rgba(0,0,0,0.38)'; roundRect(ctx, x + 0.18, y + lay.plate.y0 * k, w - 0.36, (lay.plate.y1 - lay.plate.y0) * k, 0.25); ctx.fill(); }
+      const title = m.title.length * 0.45 > m.hp - 0.6 ? m.sym : m.title;
+      this.label(F, title, x + w / 2, y + 0.95, Math.min(0.62, (w - 0.3) / Math.max(3, title.length) * 1.75), '#eef0f5', 'center', '700');
+      if (px >= 12) this.label(F, m.kind === 'analog' ? 'analog' : 'exact', x + w / 2, y + 1.5, 0.28, 'rgba(255,255,255,0.45)', 'center');
+      const param = (id) => { const ov = app.project.values[F.path + b.id + '#' + id], own = b.params && b.params[id]; return F.path && ov !== undefined ? ov : own !== undefined ? own : m.params.find((q) => q.id === id).def; };
+      this.board(F);
+      for (const q of lay.knobs) {
+        const p = m.params.find((z) => z.id === q.id);
+        this.drawPanelKnob(x + q.x * k, y + q.y * k, q.r * k, G.Analog.paramFrac(p, param(q.id)), p, px);
+        if (b.type === 'seq8' && /^k\d$/.test(q.id)) {   // the sequencer's step lights
+          const c = app.running, qi = c && c.qIndex[F.path + b.id + '#pos'];
+          const pos = qi !== undefined && app.snap && app.snap.v ? app.snap.v[qi] || 0 : 0;
+          ctx.fillStyle = Math.max(0, pos - 1) === Number(q.id.slice(1)) ? '#ff5a4a' : '#3a1d1d';
+          ctx.beginPath(); ctx.arc(x + q.x * k, y + (q.y - q.r - 0.75) * k, 0.16, 0, 7); ctx.fill();
+        }
+        this.label(F, p.label, x + q.x * k, y + (q.y + q.r + 0.75) * k, 0.31, '#c3c8d4', 'center');
+        this.board(F);
+      }
+      for (const dir of ['in', 'out']) {
+        (dir === 'in' ? lay.ins : lay.outs).forEach((j, i) => {
+          const port = (dir === 'in' ? m.ins : m.outs)[i];
+          this.drawJack(x + j.x * k, y + j.y * k, j.r * k, px);
+          this.label(F, port.label, x + j.x * k, y + (j.y - j.r - 0.45) * k, 0.3, dir === 'in' ? '#c3c8d4' : '#f2f4f8', 'center');
+          if (dir === 'out') { this.board(F); this.drawLed(x + (j.x + j.r + 0.35) * k, y + (j.y - j.r - 0.15) * k, app.valueOf(F.path + G.ep(b.id, 'out', i))); }
+          this.board(F);
+        });
+      }
+    }
+    drawPanelKnob(cx, cy, r, frac, p, px) {
+      const ctx = this.ctx;
+      frac = Math.min(1, Math.max(0, frac));
+      ctx.fillStyle = '#16181d'; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+      ctx.lineWidth = Math.min(0.03, 1 / px); ctx.strokeStyle = '#5b6170'; ctx.stroke();
+      if (px * r < 2) return;
+      const a0 = Math.PI * 0.75, span = Math.PI * 1.5, a1 = a0 + span * frac;
+      ctx.lineWidth = r * 0.18;
+      ctx.strokeStyle = '#353a46'; ctx.beginPath(); ctx.arc(cx, cy, r * 1.22, a0, a0 + span); ctx.stroke();
+      const mid = p.min < 0 && p.max > 0 ? a0 + span * G.Analog.paramFrac(p, 0) : a0;
+      ctx.strokeStyle = '#f0a640'; ctx.beginPath(); ctx.arc(cx, cy, r * 1.22, Math.min(mid, a1), Math.max(mid, a1) + 0.001); ctx.stroke();
+      ctx.lineWidth = r * 0.16; ctx.strokeStyle = '#eef0f5';
+      ctx.beginPath(); ctx.moveTo(cx + Math.cos(a1) * r * 0.25, cy + Math.sin(a1) * r * 0.25); ctx.lineTo(cx + Math.cos(a1) * r * 0.85, cy + Math.sin(a1) * r * 0.85); ctx.stroke();
+    }
+    drawJack(cx, cy, r, px) {
+      const ctx = this.ctx;
+      ctx.fillStyle = '#b9bec8'; ctx.beginPath();
+      for (let n = 0; n < 6; n++) { const a = Math.PI / 6 + n * Math.PI / 3; ctx.lineTo(cx + Math.cos(a) * r * 1.12, cy + Math.sin(a) * r * 1.12); }
+      ctx.closePath(); ctx.fill();
+      if (px * r < 1.5) return;
+      ctx.fillStyle = '#2b2f37'; ctx.beginPath(); ctx.arc(cx, cy, r * 0.78, 0, 7); ctx.fill();
+      ctx.fillStyle = '#050608'; ctx.beginPath(); ctx.arc(cx, cy, r * 0.48, 0, 7); ctx.fill();
+    }
+    drawLed(cx, cy, v) {
+      const ctx = this.ctx;
+      let col = '#2a2d33';
+      if (v !== undefined && Number.isFinite(v) && Math.abs(v) > 1e-3) {
+        const a = Math.min(1, Math.abs(v) / 5);
+        col = v > 0 ? `rgba(90,255,120,${0.25 + 0.75 * a})` : `rgba(255,80,70,${0.25 + 0.75 * a})`;
+      } else if (v !== undefined && !Number.isFinite(v)) col = '#ff2bd6';
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(cx, cy, 0.15, 0, 7); ctx.fill();
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, cy, 0.11, 0, 7); ctx.fill();
+    }
+    // Text in board units of frame F, drawn in screen pixels (tiny fonts under a scaled transform render badly).
+    label(F, txt, x, y, size, color, align, weight) {
+      const ctx = this.ctx, px = size * this.cam.z * F.sc;
+      if (px < 4.5) return;
+      const p = this.toScreen(F.ox + x * F.sc, F.oy + y * F.sc);
+      this.screen();
+      ctx.font = `${weight || '500'} ${Math.min(px, 40)}px system-ui, sans-serif`;
+      ctx.fillStyle = color; ctx.textAlign = align || 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(txt, p.x, p.y);
+    }
+
+    // ---- fixed point: logic gates in their classic shapes ------------------------------------
+    drawGate(F, b, fp, px, outline) {
+      const ctx = this.ctx, app = this.app, t = G.info(b.type);
+      const shape = b.type === 'split' || b.type === 'join' ? null : t;
+      this.board(F);
+      if (!shape) return this.drawFields(F, b, fp, px, outline);
+      ctx.save();
+      ctx.translate(b.x + fp.w / 2, b.y + fp.h / 2); ctx.rotate((b.rot || 0) * Math.PI / 2); ctx.translate(-t.w / 2, -t.h / 2);
+      const lw = (w, maxPx) => Math.min(w, maxPx / px);
+      const ins = t.ins.map(([x, y]) => [x + 0.5, y + 0.5]), outs = t.outs.map(([x, y]) => [x + 0.5, y + 0.5]);
+      const ink = outline || '#e8ebf2', fill = '#15171c';
+      ctx.lineWidth = lw(0.08, 2.5); ctx.strokeStyle = '#9aa1b2';
+      // leads from the pins to the body
+      const x0 = 0.9, x1 = t.w - 0.9, my = t.h / 2;
+      ctx.beginPath();
+      for (const [px0, py0] of ins) { ctx.moveTo(px0, py0); ctx.lineTo(x0 + 0.15, py0); }
+      for (const [px0, py0] of outs) { ctx.moveTo(x1, py0); ctx.lineTo(px0, py0); }
+      ctx.stroke();
+      ctx.fillStyle = fill; ctx.strokeStyle = ink; ctx.lineWidth = lw(outline ? 0.12 : 0.08, outline ? 3 : 2);
+      const top = b.type === 'not' ? my - 0.42 : 0.2, bot = b.type === 'not' ? my + 0.42 : t.h - 0.2;
+      const inv = b.type === 'nand' || b.type === 'nor' || b.type === 'xnor' || b.type === 'not';
+      const bx1 = inv ? x1 - 0.22 : x1;
+      ctx.beginPath();
+      if (b.type === 'and' || b.type === 'nand') {          // D shape
+        const rr = (bot - top) / 2;
+        ctx.moveTo(x0, top); ctx.lineTo(bx1 - rr, top); ctx.arc(bx1 - rr, my, rr, -Math.PI / 2, Math.PI / 2); ctx.lineTo(x0, bot); ctx.closePath();
+      } else if (b.type === 'or' || b.type === 'nor' || b.type === 'xor' || b.type === 'xnor') {   // shield
+        const l = x0 + 0.05;
+        ctx.moveTo(l, top); ctx.quadraticCurveTo(l + 0.55, top, bx1, my); ctx.quadraticCurveTo(l + 0.55, bot, l, bot);
+        ctx.quadraticCurveTo(l + 0.32, my, l, top); ctx.closePath();
+      } else if (b.type === 'not') {                       // triangle
+        ctx.moveTo(x0, top); ctx.lineTo(bx1, my); ctx.lineTo(x0, bot); ctx.closePath();
+      } else if (b.type === 'dff') {                       // a box with a clock wedge
+        ctx.rect(x0, 0.15, x1 - x0, t.h - 0.3);
+      }
+      ctx.fill(); ctx.stroke();
+      if (b.type === 'xor' || b.type === 'xnor') { ctx.beginPath(); ctx.moveTo(x0 - 0.15, top); ctx.quadraticCurveTo(x0 + 0.17, my, x0 - 0.15, bot); ctx.stroke(); }
+      if (inv) { ctx.beginPath(); ctx.arc(bx1 + 0.11, my, 0.11, 0, 7); ctx.fillStyle = fill; ctx.fill(); ctx.stroke(); }
+      if (b.type === 'dff') {
+        ctx.beginPath(); ctx.moveTo(x0, t.h - 0.85); ctx.lineTo(x0 + 0.3, t.h - 0.65); ctx.lineTo(x0, t.h - 0.45); ctx.stroke();
+        ctx.restore();
+        if (px >= 14) {
+          const P = (lx, ly) => [b.x + lx, b.y + ly];   // dff is never rotated far from upright in practice; labels follow the unrotated frame
+          if (!(b.rot & 3)) {
+            this.label(F, 'D', ...P(x0 + 0.25, 0.5), 0.32, '#e8ebf2', 'left', '600');
+            this.label(F, 'Q', ...P(x1 - 0.25, 0.5), 0.32, '#e8ebf2', 'right', '600');
+            this.label(F, 'Q̄', ...P(x1 - 0.25, t.h - 0.5), 0.32, '#e8ebf2', 'right', '600');
+          }
+        }
         return;
       }
-      const pk = e.peaks, n = pk.length / 2, mid = (y0 + y1) / 2, amp = (y1 - y0) / 2 - 2;
-      const frac = e.data.length ? at / e.data.length : 0, xh = x0 + (x1 - x0) * frac;
-      const cols = Math.max(1, Math.floor(x1 - x0));
-      for (let c = 0; c < cols; c++) {
-        const lo0 = Math.floor(c / cols * n), hi0 = Math.max(lo0 + 1, Math.floor((c + 1) / cols * n));
-        let lo = Infinity, hi = -Infinity;
-        for (let j = lo0; j < hi0; j++) { if (pk[2 * j] < lo) lo = pk[2 * j]; if (pk[2 * j + 1] > hi) hi = pk[2 * j + 1]; }
-        ctx.fillStyle = x0 + c < xh ? '#6fdc8c' : '#2f5a3e';
-        ctx.fillRect(x0 + c, mid - Math.max(0.5, hi * amp), 1, Math.max(1, (hi - lo) * amp));
+      ctx.restore();
+      void app;
+    }
+    // Split and Join: a bus ripper, a heavy bar with one lead per field.
+    drawFields(F, b, fp, px, outline) {
+      const ctx = this.ctx, split = b.type === 'split';
+      const barX = split ? b.x + 0.75 : b.x + 1.25;
+      ctx.strokeStyle = '#9aa1b2'; ctx.lineWidth = Math.min(0.08, 2.5 / px);
+      ctx.beginPath();
+      for (const p of fp.pads) {
+        const cy = p.y + 0.5;
+        if (split && p.dir === 'out') { ctx.moveTo(barX, cy); ctx.lineTo(p.x + 0.5, cy); }
+        if (!split && p.dir === 'in') { ctx.moveTo(p.x + 0.5, cy); ctx.lineTo(barX, cy); }
+        if (split && p.dir === 'in') { ctx.moveTo(p.x + 0.5, cy); ctx.lineTo(barX, cy); }
+        if (!split && p.dir === 'out') { ctx.moveTo(barX, cy); ctx.lineTo(p.x + 0.5, cy); }
       }
-      ctx.strokeStyle = '#f0a640'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(xh, y0); ctx.lineTo(xh, y1); ctx.stroke();
-      label(e.name, '#bfe8cb');
-      if (px >= 12) {
-        ctx.fillStyle = '#6d8a75'; ctx.font = `${Math.min(11, px * 0.36)}px ui-monospace, monospace`;
-        ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
-        ctx.fillText(`${Math.round(at).toLocaleString('en-US')} / ${e.data.length.toLocaleString('en-US')}${b.loop === false ? '' : ' ↻'}`, x1 - 4, y1 - 2);
-      }
+      ctx.stroke();
+      ctx.fillStyle = outline || '#e8ebf2';
+      ctx.fillRect(barX - 0.12, b.y + 0.15, 0.24, fp.h - 0.3);
+      if (px >= 16) for (const p of fp.pads) if (p.name && (split ? p.dir === 'out' : p.dir === 'in')) this.label(F, p.name, split ? p.x + 0.55 : p.x + 0.45, p.y + 0.15, 0.26, '#9aa1b2', 'center');
     }
 
-    drawScope(F, b, a, w, h, px) {
-      const ctx = this.ctx, app = this.app;
-      const k = app.running ? app.running.scopePaths.indexOf(F.path + b.id) : -1;
-      const data = k >= 0 && app.snap && app.snap.scopes ? app.snap.scopes[k] : null;
-      const x0 = a.x + px * 1.2, x1 = a.x + w - px * 0.4, y0 = a.y + px * 0.4, y1 = a.y + h - px * 0.4;
-      ctx.fillStyle = '#0d1310'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-      if (!data || !data.length || px < 3) return;
-      let start = 0, len = data.length, lo = Infinity, hi = -Infinity;
-      for (const v of data) { if (v < lo) lo = v; if (v > hi) hi = v; }
-      if (app.host.rate >= 2000) {
-        len = Math.floor(data.length / 2); start = len;
-        const mid = (lo + hi) / 2;
-        for (let j = 1; j < len; j++) if (data[j - 1] < mid && data[j] >= mid) { start = j; break; }
-        lo = Infinity; hi = -Infinity;
-        for (let j = start; j < start + len; j++) { if (data[j] < lo) lo = data[j]; if (data[j] > hi) hi = data[j]; }
+    // ---- converters: a chip half in one domain, half in the other -------------------------------
+    drawConverter(F, b, fp, px, outline) {
+      const ctx = this.ctx, m = G.MODULES[b.type], x = b.x, y = b.y, w = fp.w, h = fp.h;
+      const tone = { float: '#3a2e18', fixed: '#e8e8e8', analog: '#1d3a44' };
+      this.board(F);
+      ctx.save(); roundRect(ctx, x + 0.25, y + 0.25, w - 0.5, h - 0.5, 0.3); ctx.clip();
+      ctx.fillStyle = tone[m.ins[0].dom]; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = tone[m.outs[0].dom]; ctx.beginPath(); ctx.moveTo(x + w, y); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath(); ctx.fill();
+      if (m.ins[0].dom === 'fixed' || m.outs[0].dom === 'fixed') {   // the fixed half as a little barcode
+        const left = m.ins[0].dom === 'fixed';
+        ctx.fillStyle = '#050506';
+        for (let i = 0; i < 6; i++) if ((0b101101 >> i) & 1) ctx.fillRect(left ? x + 0.35 + i * 0.13 : x + w - 1.15 + i * 0.13, left ? y + 0.3 : y + h - 0.75, 0.08, 0.42);
       }
-      if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
-      if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
-      const X = (j) => x0 + 2 + (x1 - x0 - 4) * j / Math.max(1, len - 1);
-      const Y = (v) => y1 - 3 - (y1 - y0 - 6) * (v - lo) / (hi - lo);
-      ctx.strokeStyle = '#6fdc8c'; ctx.lineWidth = 1.3; ctx.beginPath();
-      const stride = Math.max(1, Math.floor(len / Math.max(16, x1 - x0)));  // about one point per pixel
-      for (let j = 0; j < len; j += stride) { const x = X(j), y = Y(data[start + j]); j ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
-      ctx.stroke();
-      if (px >= 8) {
-        ctx.fillStyle = '#6d8a75'; ctx.font = `${Math.min(11, px * 0.4)}px ui-monospace, monospace`;
-        ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(fmt(hi), x0 + 3, y0 + 2);
-        ctx.textBaseline = 'bottom'; ctx.fillText(fmt(lo), x0 + 3, y1 - 2);
+      ctx.restore();
+      ctx.lineWidth = Math.min(outline ? 0.12 : 0.06, (outline ? 3 : 1.5) / px); ctx.strokeStyle = outline || '#8a90a0';
+      roundRect(ctx, x + 0.25, y + 0.25, w - 0.5, h - 0.5, 0.3); ctx.stroke();
+      const sym = m.sym, size = Math.min(0.62, 1.25 / Math.max(1.6, sym.length * 0.62));
+      ctx.fillStyle = 'rgba(10,12,16,0.75)'; roundRect(ctx, x + w / 2 - size * sym.length * 0.31 - 0.1, y + h / 2 - size * 0.55, size * sym.length * 0.62 + 0.2, size * 1.1, 0.15); ctx.fill();
+      this.label(F, sym, x + w / 2, y + h / 2, size, '#f2f4f8', 'center', '700');
+    }
+
+    // ---- sockets: the design's audio inputs and outputs ---------------------------------------------
+    drawSocket(F, b, fp, px, outline) {
+      const ctx = this.ctx, app = this.app, out = b.type === 'out', x = b.x, y = b.y, w = fp.w;
+      this.board(F);
+      ctx.fillStyle = '#1b2a22'; ctx.strokeStyle = outline || '#6fdc8c'; ctx.lineWidth = Math.min(outline ? 0.12 : 0.07, (outline ? 3 : 2) / px);
+      ctx.beginPath();
+      if (out) { ctx.moveTo(x + 0.55, y + 0.12); ctx.lineTo(x + w - 0.45, y + 0.12); ctx.lineTo(x + w - 0.05, y + 0.5); ctx.lineTo(x + w - 0.45, y + 0.88); ctx.lineTo(x + 0.55, y + 0.88); }
+      else { ctx.moveTo(x + 0.05, y + 0.12); ctx.lineTo(x + w - 0.55, y + 0.12); ctx.lineTo(x + w - 0.55, y + 0.88); ctx.lineTo(x + 0.05, y + 0.88); ctx.lineTo(x + 0.45, y + 0.5); }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      const c = app.running, list = c ? (out ? c.outs : c.ins) : [], i = list.findIndex((q) => q.path === F.path + b.id);
+      this.label(F, (i >= 0 ? (i + 1) + ' · ' : '') + (b.name || b.type), x + w / 2 + (out ? 0.1 : -0.2), y + 0.5, 0.36, '#d8f5e0', 'center', '600');
+      if (px >= 10) this.label(F, out ? 'OUT' : 'IN', out ? x + w - 0.3 : x + 0.3, y - 0.25, 0.26, '#6fdc8c', 'center', '700');
+    }
+    // A Bits constant: its word as a little barcode, and the number.
+    drawBitsValue(F, b, p, px) {
+      const ctx = this.ctx, w = Math.max(1, Math.min(32, b.width || 8)), v = this.app.valueOf(F.path + G.ep(b.id, 'out', 0));
+      const val = v === undefined ? GW.word(b.value || 0, w) : v;
+      const cx = p.x + px / 2, cy = p.y + px / 2;
+      if (px < 6) { ctx.fillStyle = '#e8e8e8'; ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3); return; }
+      const sw = Math.max(1, Math.min(px * 0.14, 6)), bw = sw * w, h = Math.min(px * 0.8, 18);
+      const x0 = cx - bw / 2;
+      ctx.fillStyle = '#8a8f9c'; ctx.fillRect(x0 - 2, cy - h / 2 - 2, bw + 4, h + 4);
+      for (let k = 0; k < w; k++) { ctx.fillStyle = Math.floor(val / Math.pow(2, w - 1 - k)) % 2 ? '#f4f4f4' : '#050506'; ctx.fillRect(x0 + k * sw, cy - h / 2, sw, h); }
+      if (px >= 14) {
+        ctx.font = `600 ${Math.min(12, px * 0.34)}px ui-monospace, monospace`; ctx.fillStyle = '#c3c8d4';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(`${val} · ${w} bit${w === 1 ? '' : 's'}`, cx, cy + h / 2 + 4);
       }
     }
 
@@ -776,25 +1213,49 @@
           const [x, y, w, hh] = rectOf(h.F, b.x + o.x, b.y + o.y, b.x + o.x + fp.w - 1, b.y + o.y + fp.h - 1);
           ctx.fillRect(x, y, w, hh); ctx.strokeRect(x, y, w, hh);
         }
-        for (const [l, dx, dy] of clip.cells) {
-          const [x, y, w, hh] = rectOf(h.F, dx + o.x, dy + o.y, dx + o.x, dy + o.y);
-          const m = l === G.TOP ? 0.25 : 0.35;
-          ctx.fillRect(x + w * m, y + hh * m, w * (1 - 2 * m), hh * (1 - 2 * m));
+        for (const w of clip.wires || []) for (const [dx, dy] of w.path || []) {
+          const [x, y, ww, hh] = rectOf(h.F, dx + o.x, dy + o.y, dx + o.x, dy + o.y);
+          ctx.fillRect(x + ww * 0.35, y + hh * 0.35, ww * 0.3, hh * 0.3);
         }
       }
-      if (r && r.preview) {
-        this.board(r.F);
-        ctx.lineWidth = r.layer === G.TOP ? W_TOP : W_BOT;
-        ctx.setLineDash([0.5, 0.35]);
-        const ok = r.preview.cells.slice(0, r.preview.good + 1), bad = r.preview.cells.slice(r.preview.good);
-        ctx.strokeStyle = r.layer === G.TOP ? '#f0a640' : '#5ec8e5'; ctx.stroke(pathOf(ok));
-        if (bad.length > 1) { ctx.strokeStyle = '#ff6b6b'; ctx.stroke(pathOf(bad)); }
+      // a wire being drawn: by dragging from a pin, or corner by corner with the Wire tool
+      const wd = app.drag && app.drag.kind === 'wire' ? app.drag : r;
+      if (wd && wd.preview && wd.preview.length) {
+        this.board(wd.F);
+        ctx.lineWidth = W_TOP; ctx.setLineDash([0.5, 0.35]);
+        ctx.strokeStyle = wd.target ? '#6fdc8c' : '#f0a640';
+        ctx.stroke(pathOf(wd.preview));
         ctx.setLineDash([]);
         this.screen();
+      }
+      // where a wire being dragged can go: every pin it can connect to is ringed, the one it would snap to filled
+      const dw = app.drag && app.drag.kind === 'wire' ? app.drag : null;
+      const ring = (F, x, y, color, fill) => {
+        const q = this.toScreen(F.ox + x * F.sc, F.oy + y * F.sc), rr = Math.max(6, Math.min(14, this.cam.z * F.sc * 0.5));
+        ctx.beginPath(); ctx.arc(q.x, q.y, rr, 0, 7);
+        if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+      };
+      if (dw && dw.cands) {
+        for (const q of dw.cands) if (q.e !== dw.target) ring(dw.F, q.x, q.y, 'rgba(111,220,140,0.75)');
+        const t = dw.target && dw.cands.find((q) => q.e === dw.target);
+        if (t) ring(dw.F, t.x, t.y, '#6fdc8c', 'rgba(111,220,140,0.35)');
+        if (!dw.cands.length && dw.at) {
+          const q = this.toScreen(dw.F.ox + dw.at.x * dw.F.sc, dw.F.oy + dw.at.y * dw.F.sc);
+          ctx.fillStyle = '#f0a640'; ctx.font = '12px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+          ctx.fillText('nothing on this board to connect to', q.x + 12, q.y - 8);
+        }
       }
       if (!h) return;
       const px = this.cam.z * h.F.sc;
       const S = (x, y) => this.toScreen(h.F.ox + x * h.F.sc, h.F.oy + y * h.F.sc);
+      // a pin under the pointer: drag from it to wire
+      const hp = !dw && !app.placing && !app.pasting && app.tool === 'select' && app.pinAt ? app.pinAt(h) : null;
+      if (hp) {
+        const p = G.pinOf(h.F.sheet, app.project.defs, hp), b = G.parseEp(hp).b, blk = h.F.sheet.blocks.find((x) => x.id === b);
+        const x = blk && blk.type === 'comp' ? (p.dir === 'in' ? p.x : p.x + 1) : p.fx !== undefined ? p.fx : p.x + 0.5;
+        ring(h.F, x, p.fy !== undefined ? p.fy : p.y + 0.5, '#f0a640');
+      }
       if (app.placing) {
         const b = app.ghost(h);
         const fp = G.footprint(b, app.project.defs), p = S(b.x, b.y);
@@ -804,14 +1265,23 @@
         ctx.strokeStyle = ok ? '#f0a640' : '#ff6b6b'; ctx.lineWidth = 1.5;
         ctx.strokeRect(p.x, p.y, fp.w * px, fp.h * px);
         for (const q of fp.pads) { const s = S(q.x, q.y); ctx.strokeRect(s.x + px * 0.25, s.y + px * 0.25, px * 0.5, px * 0.5); }
-      } else if ((app.tool === 'route' || app.tool === 'erase') && px >= 3) {
+      } else if (app.tool === 'route' && px >= 3) {
         const p = S(h.x + 0.5, h.y + 0.5);
-        ctx.strokeStyle = app.layer === G.BOT ? '#5ec8e5' : '#f0a640'; ctx.lineWidth = 1;
+        ctx.strokeStyle = '#f0a640'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(3, px * 0.3), 0, 7);
         ctx.moveTo(p.x - px * 0.6, p.y); ctx.lineTo(p.x + px * 0.6, p.y); ctx.moveTo(p.x, p.y - px * 0.6); ctx.lineTo(p.x, p.y + px * 0.6);
         ctx.stroke();
       }
     }
+  }
+
+  function shade(hex, pct) {
+    const n = parseInt(hex.slice(1), 16), f = (c) => Math.max(0, Math.min(255, Math.round(c + 255 * pct / 100)));
+    return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`;
+  }
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
 
   root.GW = Object.assign(root.GW || {}, { View, colorOf, fmt, knobFrac, knobValue, POS, NEG, ENTER_PX });

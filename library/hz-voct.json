@@ -1,0 +1,33 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "Hz → V/OCT"},
+  "uses": {},
+  "block": {
+    "name": "Hz → V/OCT",
+    "description": "Float to analog, logarithmically: V = log₂(Hz / 261.63) (1 V/oct, 0 V = C4). Times 1/C4, log₂, an AWG.",
+    "fw": 3,
+    "fh": 3,
+    "s": 8,
+    "ports": [
+      {"dir": "in", "row": 1, "name": "in"},
+      {"dir": "out", "row": 1, "name": "out", "domain": "analog"}
+    ],
+    "nextId": 10,
+    "blocks": [
+      {"id": "b1", "type": "mul", "x": 3, "y": 11},
+      {"id": "b2", "type": "log2", "x": 9, "y": 12},
+      {"id": "b3", "type": "awg", "x": 16, "y": 11},
+      {"id": "b4", "type": "const", "x": 3, "y": 16, "value": 0.00382225643297143}
+    ],
+    "wires": [
+      {"id": "w5", "from": "b4.o0", "to": "b1.i1", "path": [[3,16],[3,15],[3,14],[3,13]]},
+      {"id": "w6", "from": "port.i0", "to": "b1.i0", "path": [[0,12],[0,11],[1,11],[2,11],[3,11]]},
+      {"id": "w7", "from": "b1.o0", "to": "b2.i0", "path": [[5,12],[6,12],[7,12],[8,12],[9,12]]},
+      {"id": "w8", "from": "b2.o0", "to": "b3.i0", "path": [[11,12],[12,12],[13,12],[14,12],[15,12],[16,12]]},
+      {"id": "w9", "from": "b3.o0", "to": "port.o0"}
+    ]
+  },
+  "defs": {}
+}

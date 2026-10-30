@@ -1,42 +1,34 @@
-// Runtime for the grid prototype: one clock whose rate is a slider, from a
-// crawl up to real time (one tick per audio sample). The model runs in the
-// audio thread while the DAC is on, and on the main thread while it is off.
-// Sample stacks (decoded WAVs) are sent to the audio thread once, keyed by id.
+// Runtime: one clock whose rate is a slider, from a crawl up to real time (one
+// tick per audio sample). The model runs in the audio thread while sound is on,
+// and on the main thread while it is off.
+//
+// The program's Out sockets are its audio outputs and its In sockets its inputs.
+// In the browser the first two Outs are the left and right speakers (a single Out
+// plays on both) and the Ins read the microphone's channels. Every Out is also
+// handed to `onAudio` in blocks, for the PipeWire bridge (bridge.js), which can
+// feed the Ins as well.
 (function (root) {
   'use strict';
 
-  // Shared by both threads: per-scope ring buffers of the most recent ticks.
-  const RINGS_SRC = `
-class Rings {
-  constructor(n) { this.size = 1 << 16; this.bufs = Array.from({ length: n }, () => new Float32Array(this.size)); this.idx = 0; }
-  push(src, N) {
-    const m = this.size - 1;
-    for (let k = 0; k < this.bufs.length; k++) { const b = this.bufs[k], s = src[k]; for (let i = 0; i < N; i++) b[(this.idx + i) & m] = s[i]; }
-    this.idx = (this.idx + N) & m;
-  }
-  view(k, len) { // the last len ticks, decimated to at most 1024 points
-    len = Math.min(len, this.size);
-    const stride = Math.max(1, Math.floor(len / 1024)), n = Math.floor(len / stride), out = new Float32Array(n), m = this.size - 1;
-    const start = this.idx - n * stride;
-    for (let j = 0; j < n; j++) out[j] = this.bufs[k][(start + j * stride) & m];
-    return out;
-  }
-  clear() { for (const b of this.bufs) b.fill(0); }
-}`;
-
-  const WORKLET_SRC = RINGS_SRC + `
+  const WORKLET_SRC = `
 class GridProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.fn = null; this.p = new Float64Array(0); this.s = new Float64Array(0); this.v = new Float64Array(0);
-    this.names = []; this.lib = new Map(); this.ids = []; this.w = []; this.rings = new Rings(0); this.wins = []; this.sc = []; this.sc1 = [];
-    this.rate = 48000; this.running = true; this.owner = false; this.acc = 0; this.ticks = 0; this.hold = 0;
-    this.buf = new Float32Array(128); this.one = new Float32Array(1); this.steps = 0; this.since = 0; this.dirty = false; this.bad = false;
+    this.names = [];
+    this.nOut = 0; this.nIn = 0; this.o = []; this.o1 = []; this.hold = []; this.ext = null; this.tap = false;
+    this.rate = 48000; this.running = true; this.owner = false; this.acc = 0; this.ticks = 0;
+    this.steps = 0; this.since = 0; this.dirty = false; this.bad = false;
     this.port.onmessage = (e) => this.msg(e.data);
   }
   adopt(names, values) {
     const old = new Map(names.map((n, i) => [n, values[i]]));
     this.s = Float64Array.from(this.names, (n) => old.get(n) || 0);
+  }
+  shape(nOut, nIn) {
+    this.nOut = nOut; this.nIn = nIn;
+    this.o = Array.from({ length: nOut }, () => new Float32Array(128)); this.o1 = Array.from({ length: nOut }, () => new Float32Array(1));
+    this.hold = new Float64Array(nOut);
   }
   msg(m) {
     if (m.type === 'program') {
@@ -44,54 +36,81 @@ class GridProcessor extends AudioWorkletProcessor {
       try { fn = new Function(m.code)(); } catch (err) { this.port.postMessage({ type: 'error', message: String(err) }); return; }
       const oldNames = this.names, oldS = this.s;
       this.fn = fn; this.names = m.regNames; this.adopt(oldNames, oldS);
-      this.p = m.params; this.v = new Float64Array(m.nSnap); this.ids = m.samples; this.w = this.ids.map((id) => this.lib.get(id));
-      this.wins = m.wins; this.rings = new Rings(m.wins.length);
-      this.sc = m.wins.map(() => new Float32Array(128)); this.sc1 = m.wins.map(() => new Float32Array(1));
-    } else if (m.type === 'sample') { this.lib.set(m.id, m.data); this.w = this.ids.map((id) => this.lib.get(id)); }
-    else if (m.type === 'samples') { this.ids = m.samples; this.w = this.ids.map((id) => this.lib.get(id)); }
-    else if (m.type === 'params') this.p = m.params;
-    else if (m.type === 'wins') this.wins = m.wins;
+      this.p = m.params; this.v = new Float64Array(m.nSnap);
+      this.shape(m.nOut, m.nIn);
+    } else if (m.type === 'params') this.p = m.params;
     else if (m.type === 'rate') this.rate = m.rate;
     else if (m.type === 'running') this.running = m.on;
+    else if (m.type === 'tap') this.tap = m.on;
+    else if (m.type === 'ext') {   // input from the bridge, a block per In: queued, read out as it is needed
+      if (!m.ins) { this.ext = null; return; }
+      if (!this.ext) this.ext = [];
+      m.ins.forEach((b, k) => {
+        const r = this.ext[k] || (this.ext[k] = { buf: new Float32Array(1 << 15), r: 0, n: 0 });
+        const size = r.buf.length;
+        for (let i = 0; i < b.length; i++) r.buf[(r.r + r.n + i) % size] = b[i];
+        r.n = Math.min(size, r.n + b.length);
+        if (r.n > 9600) { r.r = (r.r + r.n - 4096) % size; r.n = 4096; }   // more than 200 ms behind: catch up
+      });
+    }
     else if (m.type === 'step') this.steps++;
     else if (m.type === 'take') { this.adopt(m.state.names, m.state.values); this.ticks = m.state.ticks; this.owner = true; this.dirty = true; }
     else if (m.type === 'release') {
       this.owner = false;
       this.port.postMessage({ type: 'state', state: { names: this.names, values: this.s.slice(), ticks: this.ticks } });
-    } else if (m.type === 'reset') { this.s.fill(0); this.ticks = 0; this.hold = 0; this.acc = 0; this.bad = false; this.rings.clear(); this.dirty = true; }
+    } else if (m.type === 'reset') { this.s.fill(0); this.ticks = 0; this.hold.fill(0); this.acc = 0; this.bad = false; this.dirty = true; }
   }
-  tick() {
-    this.fn(1, this.p, this.s, this.one, this.sc1, this.v, this.w);
-    this.rings.push(this.sc1, 1);
-    this.hold = this.one[0]; this.ticks++; this.dirty = true;
+  // the inputs for this block: the bridge's if it sends them, else the microphone's channels
+  inputs(inp, N) {
+    const out = [];
+    for (let k = 0; k < this.nIn; k++) {
+      const r = this.ext && this.ext[k];
+      if (r) {
+        const b = (this.extOut = this.extOut || [])[k] && this.extOut[k].length === N ? this.extOut[k] : (this.extOut[k] = new Float32Array(N));
+        const take = Math.min(N, r.n);
+        for (let i = 0; i < take; i++) b[i] = r.buf[(r.r + i) % r.buf.length];
+        b.fill(0, take);
+        r.r = (r.r + take) % r.buf.length; r.n -= take;
+        out.push(b);
+      } else out.push((inp && inp[k]) || null);
+    }
+    return out;
+  }
+  tick(I, i) {
+    const one = I.map((c) => (c ? c.subarray(i, i + 1) : null));
+    this.fn(1, this.p, this.s, this.o1, one, this.v);
+    for (let k = 0; k < this.nOut; k++) this.hold[k] = this.o1[k][0];
+    this.ticks++; this.dirty = true;
   }
   process(inputs, outputs) {
-    const out = outputs[0], ch = out[0], N = ch.length;
+    const out = outputs[0], N = out[0].length;
     if (!this.fn || !this.owner) { for (const c of out) c.fill(0); return true; }
-    while (this.steps > 0) { this.steps--; this.tick(); }
+    const I = this.inputs(inputs[0], N);
+    while (this.steps > 0) { this.steps--; this.tick(I, 0); }
+    if (this.o.length && this.o[0].length !== N) this.o = this.o.map(() => new Float32Array(N));
     if (this.running && this.rate >= 48000) {
       // real time: exactly one tick per output sample
-      if (this.buf.length !== N) { this.buf = new Float32Array(N); this.sc = this.sc.map(() => new Float32Array(N)); }
-      this.fn(N, this.p, this.s, this.buf, this.sc, this.v, this.w);
-      this.rings.push(this.sc, N);
-      this.ticks += N; this.hold = this.buf[N - 1]; this.dirty = true;
-      ch.set(this.buf);
+      this.fn(N, this.p, this.s, this.o, I, this.v);
+      this.ticks += N; this.dirty = true;
+      for (let k = 0; k < this.nOut; k++) this.hold[k] = this.o[k][N - 1];
     } else {
-      // slower: tick when the accumulator overflows; the DAC holds its register in between
+      // slower: tick when the accumulator overflows; the outputs hold in between
       const inc = this.running ? this.rate / 48000 : 0;
       for (let i = 0; i < N; i++) {
         this.acc += inc;
-        if (this.acc >= 1) { this.acc -= 1; this.tick(); }
-        ch[i] = this.hold;
+        if (this.acc >= 1) { this.acc -= 1; this.tick(I, i); }
+        for (let k = 0; k < this.nOut; k++) this.o[k][i] = this.hold[k];
       }
     }
-    for (let i = 0; i < N; i++) if (!Number.isFinite(ch[i])) { ch.fill(0); this.bad = true; break; }
-    for (let c = 1; c < out.length; c++) out[c].set(ch);
+    for (const b of this.o) for (let i = 0; i < N; i++) if (!Number.isFinite(b[i])) { b.fill(0); this.bad = true; break; }
+    // the speakers: Out 1 left, Out 2 right; one Out on both
+    const L = this.o[0], R = this.o[1] || this.o[0];
+    if (L) { out[0].set(L); if (out[1]) out[1].set(R); } else for (const c of out) c.fill(0);
+    if (this.tap && this.nOut) this.port.postMessage({ type: 'audio', o: this.o.map((b) => b.slice()) });
     this.since += N;
     if (this.dirty && (this.since >= 1600 || this.rate <= 120)) {
       this.since = 0; this.dirty = false;
-      const scopes = this.wins.map((w, k) => this.rings.view(k, this.rate >= 2000 ? 2 * w : w));
-      this.port.postMessage({ type: 'snap', v: this.v.slice(), ticks: this.ticks, scopes, bad: this.bad });
+      this.port.postMessage({ type: 'snap', v: this.v.slice(), ticks: this.ticks, bad: this.bad });
     }
     return true;
   }
@@ -99,16 +118,13 @@ class GridProcessor extends AudioWorkletProcessor {
 registerProcessor('clockwork-grid', GridProcessor);
 `;
 
-  const Rings = new Function(RINGS_SRC + '\nreturn Rings;')();
-
   class Host {
     constructor(onSnap, onStatus) {
       this.onSnap = onSnap; this.onStatus = onStatus || (() => {});
+      this.onAudio = null;   // (outs: Float32Array[]) => void, for the bridge
       this.prog = null; this.fn = null; this.s = new Float64Array(0); this.v = new Float64Array(0);
-      this.lib = new Map(); this.sent = new Set(); this.w = [];   // sample stacks by id; the ones the worklet has
-      this.rings = new Rings(0); this.wins = [];
       this.rate = 48000; this.running = true; this.ticks = 0; this.due = 0;
-      this.owner = 'main'; this.audioOn = false; this.ctx = null; this.node = null;
+      this.owner = 'main'; this.audioOn = false; this.ctx = null; this.node = null; this.mic = null;
       this.last = 0;
       this.frame = this.frame.bind(this);
       requestAnimationFrame(this.frame);
@@ -116,43 +132,22 @@ registerProcessor('clockwork-grid', GridProcessor);
 
     post(m) { if (this.node) this.node.port.postMessage(m); }
 
-    // A decoded WAV: Float32Array at GW.FS. Programs refer to it by id.
-    addSample(id, data) {
-      this.lib.set(id, data);
-      if (this.node && !this.sent.has(id)) { this.sent.add(id); this.post({ type: 'sample', id, data }); }
-      this.bindSamples();
-    }
-    ids() { return this.prog ? this.prog.players.map((pl) => pl.sample) : []; }
-    bindSamples() {
-      this.w = this.ids().map((id) => this.lib.get(id));
-      if (this.owner === 'main') this.publish();
-    }
-    sendSamples() {
-      if (!this.node) return;
-      for (const id of this.ids()) {
-        if (id && this.lib.has(id) && !this.sent.has(id)) { this.sent.add(id); this.post({ type: 'sample', id, data: this.lib.get(id) }); }
-      }
-    }
+    programMsg(p) { return { type: 'program', code: p.code, regNames: p.regNames, nSnap: p.nSnap, params: p.params, nOut: p.outs.length, nIn: p.ins.length }; }
 
-    load(prog, wins) {
-      const sameSamples = this.prog && this.ids().join() === prog.players.map((pl) => pl.sample).join();
+    load(prog) {
       if (this.prog && this.prog.code === prog.code) {
         this.prog = prog; this.post({ type: 'params', params: prog.params });
-        if (!sameSamples) { this.sendSamples(); this.post({ type: 'samples', samples: this.ids() }); this.bindSamples(); }
-        if (wins.join() !== this.wins.join()) { this.wins = wins; this.post({ type: 'wins', wins }); }
         if (this.owner === 'main') this.publish();
         return;
       }
       const oldNames = this.prog ? this.prog.regNames : [], oldS = this.s;
       const map = new Map(oldNames.map((n, i) => [n, oldS[i]]));
-      this.prog = prog; this.wins = wins;
+      this.prog = prog;
       this.fn = GW.instantiate(prog.code);
       this.s = Float64Array.from(prog.regNames, (n) => map.get(n) || 0);
       this.v = new Float64Array(prog.nSnap);
-      this.rings = new Rings(wins.length);
-      this.w = this.ids().map((id) => this.lib.get(id));
-      this.sendSamples();
-      this.post({ type: 'program', code: prog.code, regNames: prog.regNames, nSnap: prog.nSnap, params: prog.params, wins, samples: this.ids() });
+      this.post(this.programMsg(prog));
+      if (this.audioOn && prog.ins.length && !this.mic) this.openMic();
       if (this.owner === 'main') this.publish();
     }
 
@@ -160,29 +155,42 @@ registerProcessor('clockwork-grid', GridProcessor);
     setRunning(on) { this.running = on; this.post({ type: 'running', on }); }
     step() { if (this.owner === 'worklet') this.post({ type: 'step' }); else { this.runMain(1); } }
     reset() {
-      this.s.fill(0); this.v.fill(0); this.ticks = 0; this.rings = new Rings(this.wins.length);
+      this.s.fill(0); this.v.fill(0); this.ticks = 0;
       this.post({ type: 'reset' });
       if (this.owner === 'main') this.publish();
     }
+    // Every Out, block by block, to `onAudio` (the bridge); inputs from it into the Ins.
+    tap(on) { this.tapping = on; this.post({ type: 'tap', on }); }
+    feed(ins) { this.post({ type: 'ext', ins }); }
 
     async startAudio() {
       if (!this.ctx) {
         this.ctx = new AudioContext({ sampleRate: GW.FS, latencyHint: 'interactive' });
         const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
         await this.ctx.audioWorklet.addModule(url);
-        this.node = new AudioWorkletNode(this.ctx, 'clockwork-grid', { numberOfInputs: 0, outputChannelCount: [2] });
+        this.node = new AudioWorkletNode(this.ctx, 'clockwork-grid', { numberOfInputs: 1, outputChannelCount: [2] });
         this.node.connect(this.ctx.destination);
         this.node.port.onmessage = (e) => this.fromWorklet(e.data);
         const p = this.prog;
-        this.sendSamples();
-        if (p) this.post({ type: 'program', code: p.code, regNames: p.regNames, nSnap: p.nSnap, params: p.params, wins: this.wins, samples: this.ids() });
+        if (p) this.post(this.programMsg(p));
         this.post({ type: 'rate', rate: this.rate }); this.post({ type: 'running', on: this.running });
+        if (this.tapping) this.tap(true);
       }
       this.post({ type: 'take', state: { names: this.prog ? this.prog.regNames : [], values: this.s, ticks: this.ticks } });
       this.owner = 'worklet';
       this.audioOn = true;
       this.onStatus();
       await this.ctx.resume();
+      if (this.prog && this.prog.ins.length && !this.mic) this.openMic();
+    }
+    // The microphone (or whatever the system routes to the browser's input) into the In sockets.
+    async openMic() {
+      if (!navigator.mediaDevices || this.mic === false) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 } } });
+        this.mic = this.ctx.createMediaStreamSource(stream);
+        this.mic.connect(this.node);
+      } catch (err) { this.mic = false; this.onStatus('No audio input: ' + err.message); }
     }
 
     async stopAudio() {
@@ -205,24 +213,22 @@ registerProcessor('clockwork-grid', GridProcessor);
     fromWorklet(m) {
       if (m.type === 'snap' && this.owner === 'worklet') {
         this.ticks = m.ticks;
-        this.onSnap({ v: m.v, ticks: m.ticks, scopes: m.scopes, bad: m.bad });
-      } else if (m.type === 'state' && this.pending) { const f = this.pending; this.pending = null; f(m.state); }
+        this.onSnap({ v: m.v, ticks: m.ticks, bad: m.bad });
+      } else if (m.type === 'audio') { if (this.onAudio) this.onAudio(m.o); }
+      else if (m.type === 'state' && this.pending) { const f = this.pending; this.pending = null; f(m.state); }
       else if (m.type === 'error') this.onStatus('Audio thread: ' + m.message);
     }
 
-    // Main-thread clock (DAC off): same program, same rate, no sound.
+    // Main-thread clock (sound off): same program, same rate, no sound.
     runMain(n) {
       if (!this.fn || n <= 0) return;
-      const sc = this.wins.map(() => new Float32Array(n));
-      this.fn(n, this.prog.params, this.s, new Float32Array(n), sc, this.v, this.w);
-      this.rings.push(sc, n);
+      const o = this.prog.outs.map(() => new Float32Array(n));
+      this.fn(n, this.prog.params, this.s, o, [], this.v);
       this.ticks += n;
+      if (this.onAudio && this.tapping && o.length) this.onAudio(o);   // sound off: the bridge still gets the Outs
       this.publish();
     }
-    publish() {
-      this.onSnap({ v: this.v, ticks: this.ticks,
-        scopes: this.wins.map((w, k) => this.rings.view(k, this.rate >= 2000 ? 2 * w : w)) });
-    }
+    publish() { this.onSnap({ v: this.v, ticks: this.ticks }); }
     frame(t) {
       const dt = this.last ? Math.min(0.1, (t - this.last) / 1000) : 0;
       this.last = t;

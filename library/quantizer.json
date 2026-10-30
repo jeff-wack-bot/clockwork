@@ -1,0 +1,54 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "Quantizer"},
+  "uses": {},
+  "block": {
+    "name": "Quantizer",
+    "description": "Float to fixed point: the number times 2^frac (frac: the bits after the binary point), rounded and clipped to a 16-bit signed word.",
+    "fw": 3,
+    "fh": 3,
+    "s": 8,
+    "ports": [
+      {
+        "dir": "in",
+        "row": 0,
+        "name": "frac",
+        "value": 8,
+        "knob": {"label": "frac bits", "min": 0, "max": 31, "scale": "lin"}
+      },
+      {"dir": "in", "row": 1, "name": "in"},
+      {"dir": "out", "row": 1, "name": "out", "domain": "fixed"}
+    ],
+    "nextId": 9,
+    "blocks": [
+      {"id": "b1", "type": "exp2", "x": 3, "y": 3},
+      {"id": "b2", "type": "mul", "x": 10, "y": 10},
+      {"id": "b3", "type": "word", "x": 18, "y": 11, "params": {"bits": 16, "signed": 1, "mode": 1, "scale": 0}}
+    ],
+    "wires": [
+      {"id": "w4", "from": "port.i0", "to": "b1.i0", "path": [[0,4],[1,4],[2,4],[3,4],[3,3]]},
+      {
+        "id": "w5",
+        "from": "port.i1",
+        "to": "b2.i0",
+        "path": [[0,12],[0,11],[0,10],[1,10],[2,10],[3,10],[4,10],[5,10],[6,10],[7,10],[8,10],[9,10],[10,10]]
+      },
+      {
+        "id": "w6",
+        "from": "b1.o0",
+        "to": "b2.i1",
+        "path": [[5,3],[5,4],[5,5],[5,6],[5,7],[5,8],[5,9],[5,10],[5,11],[5,12],[6,12],[7,12],[8,12],[9,12],[10,12]]
+      },
+      {
+        "id": "w7",
+        "from": "b2.o0",
+        "to": "b3.i0",
+        "path": [[12,11],[13,11],[14,11],[15,11],[16,11],[17,11],[17,12],[18,12]]
+      },
+      {"id": "w8", "from": "b3.o0", "to": "port.o0", "path": [[20,12],[21,12],[22,12],[23,12]]}
+    ]
+  },
+  "defs": {}
+}

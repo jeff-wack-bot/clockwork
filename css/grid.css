@@ -52,6 +52,14 @@ a.link { color: var(--accent2); }
 
 #center { flex: 1; position: relative; display: flex; flex-direction: column; min-width: 0; }
 #grid { flex: 1; width: 100%; min-height: 0; display: block; touch-action: none; }
+.seg { gap: 0; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 5px 5px 0; }
+.knobrow input[type=range] { flex: 2; padding: 0; accent-color: var(--accent); }
+.knobrow input[type=number] { flex: 1; max-width: 76px; }
+.knobval { margin: -4px 0 6px 100px; }
+table.jacks td:last-child { white-space: nowrap; vertical-align: top; }
 #status { height: 22px; padding: 3px 10px; font-size: 11.5px; color: var(--dim); background: var(--panel); border-top: 1px solid var(--line); overflow: hidden; white-space: nowrap; }
 #banner > div { padding: 5px 12px; font-size: 12.5px; }
 #banner .err { background: #3a1f22; color: #ffb3b3; }
@@ -99,3 +107,54 @@ ol.crit { padding-left: 22px; margin: 4px 0; }
 #style-pop label { display: block; cursor: pointer; padding: 1px 0; }
 body.embed #top, body.embed #palette, body.embed #inspector, body.embed #status, body.embed #toast, body.embed #banner { display: none; }
 body.embed #main { flex: 1; }
+#save-dlg.blockmode .ex-only, #save-dlg:not(.blockmode) .blk-only { display: none; }
+#sv-title[readonly] { color: var(--accent); border-color: transparent; background: transparent; }
+/* the three kinds of signal in the palette: copper, barcode, cable */
+#palette h3.dom-float { color: #d9b36c; }
+#palette h3.dom-fixed { color: #e8e8e8; background: repeating-linear-gradient(90deg, transparent 0 3px, #2a2d33 3px 4px) bottom / 100% 2px no-repeat; padding-bottom: 3px; }
+#palette h3.dom-analog { color: #5ec8e5; }
+/* a Bits constant, bit by bit */
+.bitrow { display: flex; flex-wrap: wrap; gap: 2px; margin: 4px 0; }
+.bit { display: flex; flex-direction: column; align-items: center; font-size: 9px; color: var(--dim); }
+.bit input { appearance: none; width: 14px; height: 20px; margin: 0; border: 1px solid #5a6070; background: #050506; cursor: pointer; }
+.bit input:checked { background: #f4f4f4; }
+#btn-bridge.on { background: #16301f; border-color: #6fdc8c; color: #6fdc8c; }
+/* the Files manager */
+#files-dlg { width: min(860px, 94vw); }
+#files-dlg .tabs { display: flex; gap: 0; margin: 8px 0; }
+#files-dlg .tabs button { border-radius: 0; margin-left: -1px; }
+#files-dlg .tabs button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+#files-dlg .tabs button:last-child { border-radius: 0 5px 5px 0; }
+#files-dlg .count { color: var(--dim); font-size: 11px; }
+#files-dlg .fl-bar { display: flex; gap: 8px; margin-bottom: 6px; }
+#files-dlg .fl-bar input { flex: 1; }
+#files-dlg .fl-scroll { max-height: 56vh; overflow: auto; border: 1px solid #2a2f3a; border-radius: 5px; }
+table.files { width: 100%; border-collapse: collapse; }
+table.files td { padding: 5px 6px; border-bottom: 1px solid #22262f; vertical-align: middle; }
+table.files tr.current td { background: #2a2214; }
+table.files td.move { width: 44px; white-space: nowrap; }
+table.files td.acts { text-align: right; white-space: nowrap; }
+table.files tr.editing td { background: #16202a; }
+table.files tr.editing input { width: 22em; }
+table.files .badge { font-size: 10px; color: var(--accent); border: 1px solid #6d5426; border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+#files-dlg.busy { cursor: progress; }
+#files-dlg.busy table, #files-dlg.busy .fl-bar { opacity: 0.6; pointer-events: none; }
+#curated { font-size: 11.5px; padding: 3px 7px; }
+#curated.dirty { color: var(--accent); border-color: #6d5426; }
+/* the block editor's ports: a column of inputs, a column of outputs, a row per row of the block */
+table.portgrid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table.portgrid th { font-size: 11px; color: var(--dim); text-align: left; font-weight: 600; padding: 2px 4px; }
+table.portgrid th:first-child, table.portgrid td.rownum { width: 18px; }
+table.portgrid td { border: 1px solid #2a2f3a; padding: 3px; vertical-align: middle; height: 30px; }
+table.portgrid td.rownum { color: var(--dim); font-size: 11px; text-align: center; border: none; }
+table.portgrid td.drop { background: #16301f; outline: 1px dashed #6fdc8c; }
+table.portgrid .addhere { width: 100%; opacity: 0.45; }
+table.portgrid .addhere:hover { opacity: 1; }
+.port { background: #1b1f27; border-left: 3px solid #d9b36c; border-radius: 3px; padding: 2px 3px; cursor: grab; }
+.port.dom-fixed { border-left-color: #e8e8e8; }
+.port.dom-analog { border-left-color: #5ec8e5; }
+.port .prow { display: flex; gap: 3px; align-items: center; }
+.port .prow + .prow { margin-top: 2px; }
+.port input { flex: 1; min-width: 0; padding: 1px 3px; }
+.port select { flex: 1; min-width: 0; font-size: 11px; }
+.port .grip { color: var(--dim); cursor: grab; font-size: 11px; letter-spacing: -2px; }

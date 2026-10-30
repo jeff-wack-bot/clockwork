@@ -2,28 +2,26 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Sample Factory — ICs, traces, flip-flops and sample stacks</title>
+  <title>Sample Factory — ICs, gates, traces, cables and flip-flops</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="css/grid.css">
 </head>
 <body>
   <header id="top">
     <div class="brand">▤ Sample <span>Factory</span></div>
-    <button id="btn-audio" class="primary" title="Switch the DAC (speaker output) on or off">▶ Start audio</button>
+    <button id="btn-audio" class="primary" title="Switch sound on or off: the Out sockets play on the speakers (and the In sockets hear the microphone)">▶ Start audio</button>
+    <button id="btn-bridge" title="PipeWire: the design's sockets as ports of a node, and the other programs' nodes on the board (needs tools/pwbridge.py)">PipeWire</button>
     <div class="group clock">
       <input type="range" id="rate" min="0" max="1" step="0.001" title="Clock rate: far right is real time (one tick per audio sample)">
       <span id="rate-label" class="mono"></span>
       <button id="btn-run" class="icon" title="Pause or run the clock">⏸</button>
       <button id="btn-step" class="icon" title="Advance exactly one tick (.)">⏭</button>
-      <button id="btn-reset" class="icon" title="Reset: clear every register to 0 (rewinds samples)">⟲</button>
+      <button id="btn-reset" class="icon" title="Reset: clear every register to 0">⟲</button>
       <span id="ticks" class="mono">tick 0</span>
     </div>
     <div class="group tools" role="toolbar" aria-label="Tools">
-      <button data-tool="select" title="Select and move (V). Drag on empty board to box-select.">⬚ Select</button>
-      <button data-tool="route" title="Route traces (W): click to start, click for corners, / flips, Tab drops a via, Esc ends">⌇ Route</button>
-      <button data-tool="erase" title="Erase traces (E) on the active layer; Shift = both layers">⌫ Erase</button>
-      <button data-tool="knob" title="Knob (K): add or remove a handle on a net nobody drives">◔ Knob</button>
-      <button id="btn-layer" title="Active layer (Tab)">Top</button>
+      <button data-tool="select" title="Select (V): drag pin → pin to wire, drag blocks to move them, drag a trace to reshape it, drag on empty board to box-select">⬚ Select</button>
+      <button data-tool="route" title="Draw a wire corner by corner (W): click a pin or a trace, click corners (/ flips), finish on a pin">⌇ Draw wire</button>
     </div>
     <div class="group edit" role="toolbar" aria-label="Edit">
       <button id="btn-undo" class="icon" title="Undo (Ctrl+Z)" disabled>↶</button>
@@ -35,9 +33,12 @@
       <button id="btn-del" class="danger" title="Delete (Del)" disabled>Delete</button>
     </div>
     <div class="spacer"></div>
-    <select id="examples" title="Load an example (undoable)"></select>
+    <select id="examples" title="Open an example, or a library block on its workbench (undoable)"></select>
+    <button id="btn-files" title="Manage the examples and library blocks: new, open, duplicate, rename, delete, reorder (Ctrl+O)">Files…</button>
+    <button id="curated" class="mono" hidden></button>
     <button id="btn-style" title="How operations, branch points, direction and registers are drawn">Style ▾</button>
-    <button id="btn-export" title="Download the project as JSON">Export</button>
+    <button id="btn-save-example" title="Save the design as an example, or a block into the library">Save…</button>
+    <button id="btn-export" title="Download the design as a design file (JSON)">Export</button>
     <button id="btn-import" title="Open a project JSON">Import</button>
     <button id="btn-help" class="icon" title="Help and keyboard shortcuts (?)">?</button>
   </header>
@@ -66,42 +67,76 @@
 
   <dialog id="help-dlg">
     <h2>Sample Factory</h2>
-    <p><b>ICs and nets.</b> Blocks are ICs with pins. A net is a set of connected traces carrying one number, shown as the trace colour. Logic ICs (add, multiply, compare, switch) settle within the tick, like gates on a real board.</p>
-    <p><b>Flip-flops are the registers.</b> The Delay IC is a flip-flop: the net it drives is a register that only changes at the clock edge. Every feedback loop needs one; a loop without one is an error. The right-hand panel shows the critical path: the longest chain of logic between flip-flops.</p>
-    <p><b>Sample stacks.</b> A Sample block is a stack of every sample in a WAV file. Each tick it emits the next one, on the same clock edge where the flip-flops latch, so at real time it plays the song and at a slow clock you can step through it one sample at a time. Place one from the palette (Sources) or drop a WAV on the board; double-click the block to load a different file. Reset rewinds it. Songs stay in this browser and are not part of exported files.</p>
-    <p><b>Unwritten nets are constants.</b> Route a short trace from an input pin and give it a handle with the knob tool. A net that an IC drives can't have a handle.</p>
-    <p><b>Routing.</b> With Route (W): click a pin, a trace or empty board to start. Click to place corners and press / to flip the corner. Finish on a pin or a trace to connect. A trace can't cross another net on the same layer: press Tab to drop a via and continue on the bottom layer, which passes under everything.</p>
+    <p><b>Blocks and wires, like a rack.</b> Blocks have pins: inputs on the left, outputs on the right (on an analog module's panel, its jacks). Drag from a pin to a pin to connect them with a wire, the way you patch a cable. An output can feed any number of inputs; an input takes one wire, and a new one replaces it. Drag a wire's end off an input to move it, or drop it on empty board to remove it.</p>
+    <p><b>Three kinds of signal, one canvas.</b> <i>Float</i> pins carry numbers and their wires are drawn as copper traces, coloured by value. <i>Fixed-point</i> pins carry words of bits and their wires are barcodes: one stripe per bit, white for 1 and black for 0, live. <i>Analog</i> jacks carry voltages and their wires are patch cables that hang between them. A wire only joins pins of the same kind; converters cross over: ADC and DAC (analog ↔ fixed), Quantizer and Dequantizer (float ↔ fixed), Voltmeter and AWG (analog ↔ float), and the pitch converters.</p>
+    <p><b>How wires look is yours.</b> Select a wire: give it a colour; a trace its width, a cable its droop. Double-click a trace to put a via there (the trace changes layer); until you place vias, they are drawn wherever traces cross. To shape a trace or a barcode, drag it sideways, or draw it corner by corner with Draw wire (W). Moving a block drags its wires along.</p>
+    <p><b>Fixed point.</b> The gates (AND, OR, XOR, NOT, NAND, NOR, XNOR) work on every bit of a bus at once; a bus is as wide as what drives it. Split takes a bus apart into fields and Join puts fields together. The D flip-flop is the register. Where the binary point is, and whether a word is signed, is up to the converters: the bus is only bits.</p>
+    <p><b>Analog modules</b> sit on the board as their panels, knobs and all: VCOs, a ladder filter, VCAs, envelopes, LFOs, noise, a mixer, an analog sequencer. Turn a knob by dragging it (double-click resets it). They run on the same clock as everything else: a tick is always 1/48 000 s of simulated time, so slowing the clock puts them in slow motion too. Each is sampled at the clock edge (one tick of latency), so feedback through them is always allowed. Voltages: 1 V/oct with 0 V = C4, audio ±5 V, gates 0–10 V.</p>
+    <p><b>Sockets.</b> In and Out blocks are the design's audio inputs and outputs. In the browser the first Out is the left speaker and the second the right (one Out plays on both); Ins hear the microphone. With the PipeWire bridge (run <code>python3 tools/pwbridge.py</code> as yourself), the design is a node in PipeWire with a port per socket, to patch in Helvum, and the other programs' nodes can be shown and patched on the board.</p>
+    <p><b>Flip-flops are the registers.</b> The Delay IC is a flip-flop: its output only changes at the clock edge. Every feedback loop needs one; a loop without one is an error. The right-hand panel shows the critical path: the longest chain of logic between flip-flops.</p>
+    <p><b>Constants.</b> A Constant block is a number, with a knob if you like; wire it to any number of inputs. Inside a block, a Constant (or an input's default, set in the block's inspector) is a default: a wire from outside overrides it.</p>
     <p><b>Style lab.</b> The Style menu changes how operations, branch points, direction and registers are drawn. <a href="styles.html">Compare them side by side.</a></p>
     <p><b>Zoom is navigation.</b> Every composite IC shows its own board inside. Scroll in until its traces are big and you are working inside it. The definition is shared, but each instance keeps its own knob values. Double-click an IC to fly into it, Z or Esc to back out, H to see everything.</p>
-    <p><b>One clock.</b> The slider runs the design from 0.5 ticks/s up to real time (48 000 ticks/s, one per audio sample). With audio on, the speaker holds the DAC between ticks, so slow clocks are clicks and real time is sound.</p>
-    <p><b>Selecting and editing.</b> With Select (V), drag on empty board to box-select; click to select a block or a trace; Shift-click adds or removes. Drag anything selected to move the whole selection, or nudge it with the arrow keys. Copy, cut, paste and duplicate work on blocks and traces together, keeping knobs and nets intact. Every change can be undone.</p>
+    <p><b>One clock.</b> The slider runs the design from 0.5 ticks/s up to real time (48 000 ticks/s, one per audio sample). With audio on, every Out holds its value between ticks, so slow clocks are clicks and real time is sound.</p>
+    <p><b>Selecting and editing.</b> With Select (V), drag on empty board to box-select; click a block or a trace to select it; Shift-click adds or removes. Drag a selected block to move the selection, or nudge it with the arrow keys. Copy, cut, paste and duplicate take blocks and the wires between them, keeping knobs intact. Every change can be undone.</p>
     <h3>Keys</h3>
     <table class="keys">
-      <tr><td><kbd>V</kbd> <kbd>W</kbd> <kbd>E</kbd> <kbd>K</kbd></td><td>select · route · erase · knob</td></tr>
+      <tr><td><kbd>V</kbd> <kbd>W</kbd></td><td>select · draw a wire corner by corner</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>undo / redo (also <kbd>Ctrl</kbd>+<kbd>Y</kbd>)</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> <kbd>D</kbd> <kbd>A</kbd></td><td>copy · cut · paste · duplicate · select all</td></tr>
-      <tr><td><kbd>Del</kbd> / <kbd>Shift</kbd>+<kbd>Del</kbd></td><td>delete selection / a clicked trace's whole net</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> · <kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>save the open example or block to its file · the Files manager</td></tr>
+      <tr><td><kbd>Del</kbd> / <kbd>Shift</kbd>+<kbd>Del</kbd></td><td>delete selection / all the wires of a clicked trace's net</td></tr>
       <tr><td>arrows (<kbd>Shift</kbd>: ×5)</td><td>nudge the selection</td></tr>
       <tr><td><kbd>R</kbd></td><td>rotate the selected atom, or the one being placed</td></tr>
-      <tr><td><kbd>Tab</kbd> · <kbd>/</kbd> · <kbd>Esc</kbd></td><td>layer (via while routing) · flip corner · cancel / deselect / zoom out</td></tr>
+      <tr><td><kbd>/</kbd> · <kbd>Esc</kbd></td><td>flip the corner while drawing a wire · cancel / deselect / zoom out</td></tr>
       <tr><td>wheel · right/middle/<kbd>Space</kbd>-drag</td><td>zoom · pan</td></tr>
       <tr><td><kbd>F</kbd> · <kbd>H</kbd> · <kbd>Z</kbd></td><td>zoom to selection · show everything · zoom out one level</td></tr>
-      <tr><td>double-click</td><td>enter a block · type a knob value · load a WAV</td></tr>
+      <tr><td>double-click</td><td>enter a block · type a constant's value · reset a module's knob · rename a socket · put or remove a via on a trace</td></tr>
+      <tr><td>drag a knob</td><td>turn it (<kbd>Shift</kbd>: fine)</td></tr>
       <tr><td><kbd>.</kbd> · <kbd>?</kbd></td><td>step one tick · this help</td></tr>
     </table>
     <button class="close">Close</button>
   </dialog>
+  <dialog id="save-dlg">
+    <h2>Save</h2>
+    <p class="dim small">Examples and library blocks are design files in the repository (examples/ and library/). Examples refer to library blocks by name, so a block saved here reaches every design that uses it. See FORMAT.md.</p>
+    <label class="field"><span>What</span><select id="sv-what"></select></label>
+    <label class="field"><span>Title</span><input id="sv-title" autocomplete="off"></label>
+    <label class="field col ex-only"><span>Note, shown when it opens</span><textarea id="sv-note" rows="4"></textarea></label>
+    <label class="field col blk-only"><span>Description (shown in the palette and inspector)</span><textarea id="sv-desc" rows="4"></textarea></label>
+    <label class="field ex-only"><span>Clock</span><select id="sv-rate"></select></label>
+    <label class="field ex-only"><span>Opening view</span><input type="checkbox" id="sv-cam" checked> <span class="dim small">zoomed and panned as on screen now</span></label>
+    <label class="field"><span>File name</span><input id="sv-file" autocomplete="off" placeholder="from the title"></label>
+    <p id="sv-status" class="small dim"></p>
+    <p class="btnrow"><button id="sv-save" class="primary">Save to examples/</button> <button id="sv-download">Download</button> <button class="close">Cancel</button></p>
+  </dialog>
+  <dialog id="files-dlg">
+    <h2>Files</h2>
+    <p class="dim small">The curated examples (examples/) and the block library (library/), as the Open menu lists them. Deleting moves a file to the trash, where it can be restored. Renaming a block updates every file that uses it.</p>
+    <div class="tabs">
+      <button data-tab="examples">Examples <span id="fl-n-examples" class="count"></span></button><button data-tab="library">Library blocks <span id="fl-n-library" class="count"></span></button><button data-tab="trash">Trash <span id="fl-n-trash" class="count"></span></button>
+    </div>
+    <div class="fl-bar"><input id="fl-filter" type="search" placeholder="Filter…" autocomplete="off"> <button id="fl-new" class="primary">+ New</button></div>
+    <p id="fl-readonly" class="err small" hidden>This page is not served by tools/serve.py, so files can be opened but not changed.</p>
+    <div class="fl-scroll"><table class="files"><tbody id="fl-list"></tbody></table></div>
+    <p id="fl-status" class="small"></p>
+    <p class="btnrow"><button class="close">Close</button></p>
+  </dialog>
   <input type="file" id="file-input" accept=".json" hidden>
-  <input type="file" id="wav-input" accept=".wav,audio/wav,audio/x-wav,audio/*" hidden>
 
   <script src="js/grid/model.js"></script>
+  <script src="js/grid/analog.js"></script>
+  <script src="js/grid/converters.js"></script>
+  <script src="js/grid/migrate.js"></script>
+  <script src="js/grid/format.js"></script>
   <script src="js/grid/compiler.js"></script>
   <script src="js/grid/tunings.js"></script>
   <script src="js/grid/library.js"></script>
   <script src="js/grid/engine.js"></script>
-  <script src="js/grid/samples.js"></script>
   <script src="js/grid/view.js"></script>
   <script src="js/grid/editor.js"></script>
+  <script src="js/grid/bridge.js"></script>
+  <script src="js/grid/files.js"></script>
   <script src="js/grid/app.js"></script>
 </body>
 </html>

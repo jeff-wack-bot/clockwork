@@ -1,0 +1,16 @@
+{
+  "examples": [
+    {"file": "a-tone-zoom-into-the-vco.json", "title": "A tone (zoom into the VCO)"},
+    {"file": "sequenced-synth.json", "title": "Sequenced synth"},
+    {"file": "six-temperaments-tuning-roms.json", "title": "Six temperaments (tuning ROMs)"},
+    {"file": "chords-as-harmonics-otonal.json", "title": "Chords as harmonics (otonal)"},
+    {"file": "the-comma-pump.json", "title": "The comma pump"},
+    {"file": "dividers-utonal.json", "title": "Dividers (utonal)"},
+    {"file": "analog-voice.json", "title": "Analog voice"},
+    {"file": "just-chords-on-analog-vcos.json", "title": "Just chords on analog VCOs"},
+    {"file": "an-input-through-a-ladder-filter.json", "title": "An input through a ladder filter"},
+    {"file": "analog-feedback-loops.json", "title": "Analog feedback loops"},
+    {"file": "three-domains-gates-play-a-vco.json", "title": "Three domains: gates play a VCO"},
+    {"file": "bit-crusher.json", "title": "Bit crusher"}
+  ]
+}

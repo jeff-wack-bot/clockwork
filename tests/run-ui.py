@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run the interactivity tests (tests/ui/ui-tests.js) in headless Firefox.
 
-Serves the repository on a local port, opens index.html?uitest=1 in a fresh
-Firefox profile, waits for the page to POST its report, prints it and exits
-non-zero on failure. No dependencies beyond Python 3 and Firefox.
+Serves a temporary copy of the repository with the curator server (so saving,
+renaming and deleting files can be tested without touching the real ones), opens
+index.html?uitest=1 in a fresh Firefox profile, waits for the page to POST its
+report, prints it and exits non-zero on failure. No dependencies beyond Python 3 and Firefox.
 Usage: python3 tests/run-ui.py   (FIREFOX=/path/to/firefox to override)
 """
 import functools, http.server, json, os, shutil, subprocess, sys, tempfile, threading
@@ -13,24 +14,36 @@ PORT = int(os.environ.get('UI_PORT', '8767'))
 TIMEOUT = float(os.environ.get('UI_TIMEOUT', '240'))
 done, report = threading.Event(), {}
 
-class Handler(http.server.SimpleHTTPRequestHandler):
+# The page is served by the curator server (tools/serve.py) from a temporary copy
+# of the repository, so the tests can save, rename and delete files freely.
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+import serve  # noqa: E402
+
+class Handler(serve.Handler):
     def log_message(self, *args): pass
-    def end_headers(self):
-        self.send_header('Cache-Control', 'no-store')
-        super().end_headers()
     def do_POST(self):
         if self.path != '/__ui_result':
-            self.send_error(404); return
+            return super().do_POST()
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         report.update(json.loads(body or b'{}'))
         self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
         done.set()
 
+def copy_site():
+    site = tempfile.mkdtemp(prefix='sf-site-')
+    for name in ('index.html', 'index_old.html', 'styles.html', 'css', 'js', 'examples', 'library', os.path.join('tests', 'ui')):
+        src = os.path.join(ROOT, name)
+        if os.path.isdir(src): shutil.copytree(src, os.path.join(site, name), ignore=shutil.ignore_patterns('.trash'))
+        elif os.path.exists(src): shutil.copy(src, os.path.join(site, name))
+    return site
+
 def main():
     firefox = os.environ.get('FIREFOX') or shutil.which('firefox')
     if not firefox:
         print('firefox not found (set FIREFOX)'); return 2
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', PORT), functools.partial(Handler, directory=ROOT))
+    site = copy_site()
+    Handler.root = site
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', PORT), functools.partial(Handler, directory=site))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     profile = tempfile.mkdtemp(prefix='sf-ui-')
     with open(os.path.join(profile, 'user.js'), 'w') as f:
@@ -48,6 +61,7 @@ def main():
         except subprocess.TimeoutExpired: proc.kill()
         server.shutdown()
         shutil.rmtree(profile, ignore_errors=True)
+        shutil.rmtree(site, ignore_errors=True)
     if not finished:
         print(f'no report from the page within {TIMEOUT:.0f} s'); return 1
     for r in report.get('results', []):

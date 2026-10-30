@@ -1,0 +1,49 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "DAC"},
+  "uses": {},
+  "block": {
+    "name": "DAC",
+    "description": "Fixed point to analog, bipolar: the word read as a signed fraction of full scale (−1 … 1), times range: −range … +range volts, whatever the width of the bus.",
+    "fw": 3,
+    "fh": 3,
+    "s": 8,
+    "ports": [
+      {
+        "dir": "in",
+        "row": 0,
+        "name": "range",
+        "value": 5,
+        "knob": {"label": "range V", "min": 0.1, "max": 12, "scale": "log"}
+      },
+      {"dir": "in", "row": 1, "name": "in", "domain": "fixed"},
+      {"dir": "out", "row": 1, "name": "out", "domain": "analog"}
+    ],
+    "nextId": 9,
+    "blocks": [
+      {"id": "b1", "type": "value", "x": 3, "y": 11, "params": {"signed": 1, "scale": 1}},
+      {"id": "b2", "type": "mul", "x": 10, "y": 10},
+      {"id": "b3", "type": "awg", "x": 18, "y": 11}
+    ],
+    "wires": [
+      {"id": "w4", "from": "port.i1", "to": "b1.i0", "path": [[0,12],[1,12],[2,12],[3,12]]},
+      {"id": "w5", "from": "b1.o0", "to": "b2.i0", "path": [[5,12],[6,12],[7,12],[8,12],[9,12],[9,11],[9,10],[10,10]]},
+      {
+        "id": "w6",
+        "from": "port.i0",
+        "to": "b2.i1",
+        "path": [[0,4],[1,4],[2,4],[3,4],[4,4],[5,4],[6,4],[7,4],[8,4],[8,5],[8,6],[8,7],[8,8],[8,9],[8,10],[8,11],[8,12],[8,13],[9,13],[10,13],[10,12]]
+      },
+      {
+        "id": "w7",
+        "from": "b2.o0",
+        "to": "b3.i0",
+        "path": [[12,11],[13,11],[14,11],[15,11],[16,11],[17,11],[17,12],[18,12]]
+      },
+      {"id": "w8", "from": "b3.o0", "to": "port.o0"}
+    ]
+  },
+  "defs": {}
+}

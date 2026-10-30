@@ -29,6 +29,16 @@ jobs:
         run: node tests/grid.test.js
       - name: Editor tests (selection, clipboard, moves, undo)
         run: node tests/editor.test.js
+      - name: Analog modules (circuits, clock boundaries, panels)
+        run: node tests/analog.test.js
+      - name: Signal domains, converters, sockets, the move from the rack
+        run: node tests/domains.test.js
+      - name: PipeWire bridge (skipped where PipeWire is not installed)
+        run: python3 tests/pwbridge_test.py
+      - name: Design files, curated examples and the compatibility lock
+        run: node tests/format.test.js
+      - name: Curator server
+        run: python3 tests/serve_test.py
       - uses: browser-actions/setup-firefox@v1
       - name: Interactivity tests (headless Firefox)
         run: python3 tests/run-ui.py
@@ -44,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
       - name: Collect the site
-        run: mkdir _site && cp -r index.html index_old.html styles.html css js _site/ && mkdir -p _site/tests && cp -r tests/ui _site/tests/
+        run: mkdir _site && cp -r index.html index_old.html styles.html css js examples library _site/ && mkdir -p _site/tests && cp -r tests/ui _site/tests/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

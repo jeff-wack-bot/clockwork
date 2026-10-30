@@ -1,0 +1,101 @@
+{
+  "format": "sample-factory-design",
+  "version": 3,
+  "kind": "example",
+  "meta": {
+    "title": "Just chords on analog VCOs (rack + chip)",
+    "note": "The Harmonics score is a board chip in the rack; Hz → V/OCT turns its frequencies into volts for four analog VCOs. The chords are pure while the VCOs are perfect: turn up DRIFT or TRACK on a VCO and they start to beat.",
+    "rate": 48000,
+    "view": "rack"
+  },
+  "uses": {
+    "Harmonics": "5x7 in@0:phase in@6:f0 out@0:h1 out@2:h2 out@4:h3 out@6:h4",
+    "Mux4": "4x5 in@0:phase in@1:s1 in@2:s2 in@3:s3 in@4:s4 out@2:out"
+  },
+  "board": {"nextId": 1, "blocks": [], "wires": []},
+  "defs": {},
+  "values": {},
+  "rack": {
+    "nextId": 41,
+    "modules": [
+      {"id": "m1", "type": "lfo", "x": 0, "row": 0, "params": {"amp": 5, "rate": 0.5}},
+      {
+        "id": "m2",
+        "type": "atten",
+        "x": 10,
+        "row": 0,
+        "params": {"a1": 0.1, "a2": 0, "o1": 0.5, "o2": 5.450532610429138}
+      },
+      {"id": "m3", "type": "chip", "def": "Harmonics", "x": 18, "row": 0},
+      {"id": "m4", "type": "hz2v", "x": 46, "row": 0},
+      {"id": "m5", "type": "hz2v", "x": 50, "row": 0},
+      {"id": "m6", "type": "hz2v", "x": 54, "row": 0},
+      {"id": "m7", "type": "hz2v", "x": 58, "row": 0},
+      {"id": "m8", "type": "clock", "x": 62, "row": 0, "params": {"bpm": 120, "pw": 0.6}},
+      {"id": "m9", "type": "adsr", "x": 72, "row": 0, "params": {"a": 0.02, "d": 0.4, "r": 0.2, "s": 0.6}},
+      {
+        "id": "m10",
+        "type": "vco",
+        "x": 0,
+        "row": 1,
+        "params": {"drift": 0, "fine": 0, "fm": 0, "freq": 0, "pw": 0.5, "track": 0}
+      },
+      {
+        "id": "m11",
+        "type": "vco",
+        "x": 14,
+        "row": 1,
+        "params": {"drift": 0, "fine": 0, "fm": 0, "freq": 0, "pw": 0.5, "track": 0}
+      },
+      {
+        "id": "m12",
+        "type": "vco",
+        "x": 28,
+        "row": 1,
+        "params": {"drift": 0, "fine": 0, "fm": 0, "freq": 0, "pw": 0.5, "track": 0}
+      },
+      {
+        "id": "m13",
+        "type": "vco",
+        "x": 42,
+        "row": 1,
+        "params": {"drift": 0, "fine": 0, "fm": 0, "freq": 0, "pw": 0.5, "track": 0}
+      },
+      {
+        "id": "m14",
+        "type": "mixer",
+        "x": 56,
+        "row": 1,
+        "params": {"l1": 0.5, "l2": 0.5, "l3": 0.5, "l4": 0.5, "master": 0.6}
+      },
+      {"id": "m15", "type": "vcf", "x": 70, "row": 1, "params": {"cv": 0, "drive": 1, "freq": 1800, "res": 0.2}},
+      {"id": "m16", "type": "vca", "x": 82, "row": 1, "params": {"level": 1, "resp": 0.5}},
+      {"id": "m17", "type": "audio", "x": 90, "row": 1, "params": {"level": 1}},
+      {"id": "m18", "type": "scope2", "x": 96, "row": 1, "params": {"gain": 2.5, "time": 20}}
+    ],
+    "cables": [
+      {"id": "c19", "from": ["m1","saw"], "to": ["m2","in1"], "color": 0},
+      {"id": "c20", "from": ["m2","out1"], "to": ["m3","phase"], "color": 1},
+      {"id": "c21", "from": ["m2","out2"], "to": ["m3","f0"], "color": 2},
+      {"id": "c22", "from": ["m3","h1"], "to": ["m4","hz"], "color": 3},
+      {"id": "c23", "from": ["m4","v"], "to": ["m10","voct"], "color": 4},
+      {"id": "c24", "from": ["m10","saw"], "to": ["m14","in1"], "color": 5},
+      {"id": "c25", "from": ["m3","h2"], "to": ["m5","hz"], "color": 6},
+      {"id": "c26", "from": ["m5","v"], "to": ["m11","voct"], "color": 0},
+      {"id": "c27", "from": ["m11","saw"], "to": ["m14","in2"], "color": 1},
+      {"id": "c28", "from": ["m3","h3"], "to": ["m6","hz"], "color": 2},
+      {"id": "c29", "from": ["m6","v"], "to": ["m12","voct"], "color": 3},
+      {"id": "c30", "from": ["m12","saw"], "to": ["m14","in3"], "color": 4},
+      {"id": "c31", "from": ["m3","h4"], "to": ["m7","hz"], "color": 5},
+      {"id": "c32", "from": ["m7","v"], "to": ["m13","voct"], "color": 6},
+      {"id": "c33", "from": ["m13","saw"], "to": ["m14","in4"], "color": 0},
+      {"id": "c34", "from": ["m8","clk"], "to": ["m9","gate"], "color": 1},
+      {"id": "c35", "from": ["m9","env"], "to": ["m16","cv"], "color": 2},
+      {"id": "c36", "from": ["m14","out"], "to": ["m15","in"], "color": 3},
+      {"id": "c37", "from": ["m15","lp"], "to": ["m16","in"], "color": 4},
+      {"id": "c38", "from": ["m16","out"], "to": ["m17","l"], "color": 5},
+      {"id": "c39", "from": ["m16","out"], "to": ["m18","a"], "color": 6},
+      {"id": "c40", "from": ["m10","sin"], "to": ["m18","b"], "color": 0}
+    ]
+  }
+}

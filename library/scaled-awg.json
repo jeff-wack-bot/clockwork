@@ -1,0 +1,52 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "Scaled AWG"},
+  "uses": {},
+  "block": {
+    "name": "Scaled AWG",
+    "description": "Float to analog, scaled: gain volts for every unit of the number.",
+    "fw": 3,
+    "fh": 3,
+    "s": 8,
+    "ports": [
+      {
+        "dir": "in",
+        "row": 0,
+        "name": "gain",
+        "value": 1,
+        "knob": {"label": "gain V", "min": 0.01, "max": 100, "scale": "log"}
+      },
+      {"dir": "in", "row": 1, "name": "in"},
+      {"dir": "out", "row": 1, "name": "out", "domain": "analog"}
+    ],
+    "nextId": 7,
+    "blocks": [
+      {"id": "b1", "type": "mul", "x": 6, "y": 10},
+      {"id": "b2", "type": "awg", "x": 16, "y": 11}
+    ],
+    "wires": [
+      {
+        "id": "w3",
+        "from": "port.i1",
+        "to": "b1.i0",
+        "path": [[0,12],[0,11],[0,10],[1,10],[2,10],[3,10],[4,10],[5,10],[6,10]]
+      },
+      {
+        "id": "w4",
+        "from": "port.i0",
+        "to": "b1.i1",
+        "path": [[0,4],[1,4],[2,4],[3,4],[4,4],[5,4],[5,5],[5,6],[5,7],[5,8],[5,9],[5,10],[5,11],[5,12],[6,12]]
+      },
+      {
+        "id": "w5",
+        "from": "b1.o0",
+        "to": "b2.i0",
+        "path": [[8,11],[9,11],[10,11],[11,11],[12,11],[13,11],[14,11],[15,11],[15,12],[16,12]]
+      },
+      {"id": "w6", "from": "b2.o0", "to": "port.o0"}
+    ]
+  },
+  "defs": {}
+}

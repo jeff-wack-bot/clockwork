@@ -10,43 +10,69 @@ function test(name, fn) {
   try { fn(); passed++; console.log('ok   ' + name); }
   catch (e) { console.log('FAIL ' + name + '\n     ' + e.stack.split('\n').slice(0, 3).join('\n     ')); process.exitCode = 1; }
 }
-function run(prog, N, w, s) {
+// Run a program for N ticks (ins: a buffer per In socket). d: the Out sockets summed; tr: for each watched pin key,
+// its value on every tick (read from the snapshot, one tick at a time).
+function run(prog, N, ins, s, watch) {
   const fn = instantiate(prog.code);
   s = s || new Float64Array(prog.nState);
-  const d = new Float32Array(N);
-  const sc = prog.scopePaths.map(() => new Float64Array(N));
-  fn(N, prog.params, s, d, sc, new Float64Array(prog.nSnap), w);
-  return { s, d, sc };
+  const d = new Float32Array(N), v = new Float64Array(prog.nSnap);
+  watch = watch || [];
+  const tr = watch.map(() => new Float64Array(N));
+  if (!watch.length) {
+    const o = prog.outs.map(() => new Float32Array(N));
+    fn(N, prog.params, s, o, ins || [], v);
+    for (const x of o) for (let i = 0; i < N; i++) d[i] += x[i];
+    return { s, d, tr };
+  }
+  const o1 = prog.outs.map(() => new Float32Array(1));
+  for (let i = 0; i < N; i++) {
+    fn(1, prog.params, s, o1, (ins || []).map((a) => a.subarray(i, i + 1)), v);
+    for (const x of o1) d[i] += x[0];
+    watch.forEach((k, j) => { const r = prog.netOf[k]; tr[j][i] = r.k === 'p' ? prog.params[r.i] : v[r.v]; });
+  }
+  return { s, d, tr };
 }
+const pin = (b, dir, i) => G.ep(b.id, dir, i || 0);
 const defs = L.starterDefs();
 
-test('painting, merging and splitting regions', () => {
-  const sh = G.makeSheet(), occ = G.occupancy(sh, defs);
-  const a = G.newRegion(sh), b = G.newRegion(sh);
-  for (let x = 0; x < 5; x++) G.paint(sh, occ, G.TOP, x, 0, a);
-  G.paint(sh, occ, G.TOP, 4, 1, b);
-  assert.strictEqual(G.paint(sh, occ, G.TOP, 4, 0, b), 'merged');      // painting into a joins
-  assert.strictEqual(Object.keys(sh.regions).length, 1);
-  G.erase(sh, G.TOP, 2, 0);                                             // cutting splits
-  assert.strictEqual(Object.keys(sh.regions).length, 2);
-});
-
-test('a via joins layers; the bottom layer passes under blocks', () => {
+test('wires join an output to inputs: an input takes one wire, an output feeds any number', () => {
   const sh = G.makeSheet();
-  G.addBlock(sh, defs, { type: 'add', x: 2, y: 0 });
-  const occ = G.occupancy(sh, defs), r = G.newRegion(sh);
-  assert.strictEqual(G.paint(sh, occ, G.TOP, 3, 1, r), 'blocked');      // chip body
-  assert.strictEqual(G.paint(sh, occ, G.TOP, 2, 0, r), 'ok');           // pad
-  for (let x = 0; x < 7; x++) assert.strictEqual(G.paint(sh, occ, G.BOT, x, 1, r), 'ok');
-  G.erase(sh, G.TOP, 2, 0);
-  assert.strictEqual(G.cellsOf(sh, r).length, 7);
+  const a = G.addBlock(sh, defs, { type: 'delay', x: 0, y: 0 }), c = G.addBlock(sh, defs, { type: 'add', x: 6, y: 0 });
+  const k = G.addBlock(sh, defs, { type: 'const', x: 0, y: 4, value: 2 });
+  assert.ok(G.addWire(sh, G.ep(a.id, 'out', 0), G.ep(c.id, 'in', 0)));
+  assert.ok(G.addWire(sh, G.ep(a.id, 'out', 0), G.ep(c.id, 'in', 1)));          // fan-out
+  assert.strictEqual(G.addWire(sh, G.ep(c.id, 'in', 0), G.ep(a.id, 'in', 0)), null);   // input to input: no
+  G.addWire(sh, G.ep(k.id, 'out', 0), G.ep(c.id, 'in', 1));                     // replaces the wire into b
+  assert.deepStrictEqual(sh.wires.map((w) => [w.from, w.to]), [[G.ep(a.id, 'out', 0), G.ep(c.id, 'in', 0)], [G.ep(k.id, 'out', 0), G.ep(c.id, 'in', 1)]]);
+  G.removeBlocks(sh, new Set([k.id]));
+  assert.strictEqual(sh.wires.length, 1);                                       // its wires went with it
 });
 
-test('blocks cannot be placed over a region except on their pads', () => {
-  const sh = G.makeSheet(), occ = G.occupancy(sh, defs), r = G.newRegion(sh);
-  G.paint(sh, occ, G.TOP, 1, 1, r);
-  assert.ok(!G.canPlace(sh, defs, { type: 'add', x: 0, y: 0, rot: 0 }));
-  assert.ok(G.canPlace(sh, defs, { type: 'add', x: 1, y: 1, rot: 0 }));  // (1,1) is pad "a"
+test('layers and vias are only drawing: a crossing dips under, the connections stay the same', () => {
+  const r = G.makeSheet(), b = G.builder(r, defs);
+  b.block('a', 'delay', 0, 4); b.block('z', 'delay', 12, 4);                    // a horizontal wire...
+  b.block('u', 'delay', 6, 0, { rot: 1 }); b.block('v', 'delay', 6, 8, { rot: 1 });   // ...and a vertical one across it
+  b.net('a.out0', 'z.in0'); b.net('u.out0', 'v.in0');
+  const L = G.renderLayout(r, defs);
+  const bot = Object.keys(L.bot);
+  assert.ok(bot.length >= 1, 'one trace passes under the other');
+  const nets = new Set(Object.values(L.top).concat(Object.values(L.bot)));
+  assert.strictEqual(nets.size, 2);
+  const p = compile({ root: r, defs, values: {} });
+  assert.ok(p.ok);
+  assert.notStrictEqual(p.netOf[G.ep(r.blocks[0].id, 'out', 0)].i, p.netOf[G.ep(r.blocks[2].id, 'out', 0)].i, 'two separate nets');
+});
+
+test('blocks go anywhere but on other blocks; wires are re-drawn around them', () => {
+  const r = G.makeSheet(), b = G.builder(r, defs);
+  b.block('a', 'delay', 0, 0); b.block('z', 'delay', 12, 0);
+  b.net('a.out0', 'z.in0');
+  assert.ok(G.canPlace(r, defs, { type: 'add', x: 5, y: 0, rot: 0 }), 'over a trace is fine');
+  assert.ok(!G.canPlace(r, defs, { type: 'add', x: 11, y: 0, rot: 0 }), 'over a block is not');
+  G.addBlock(r, defs, { type: 'add', x: 5, y: 0 });
+  const route = G.routesOf(r, defs).get(r.wires[0].id);
+  assert.ok(route && route.length >= 2, 'still drawn');
+  assert.ok(compile({ root: r, defs, values: {} }).ok);
 });
 
 test('rotation moves the pads', () => {
@@ -56,10 +82,11 @@ test('rotation moves the pads', () => {
 });
 
 test('counter: an Add and a flip-flop count; more flip-flops hold older counts', () => {
-  const p = compile(L.exampleProject(0));
+  const proj = L.exampleProject(0), p = compile(proj);
   assert.ok(p.ok, JSON.stringify(p.errors));
-  const { sc, s } = run(p, 5);
-  assert.deepStrictEqual(Array.from(sc[0]), [0, 1, 2, 3, 4]);
+  const ff = proj.root.blocks.find((b) => b.type === 'delay' && b.x === 10);
+  const { tr, s } = run(p, 5, null, null, [pin(ff, 'out')]);
+  assert.deepStrictEqual(Array.from(tr[0]), [0, 1, 2, 3, 4]);
   assert.deepStrictEqual(Array.from(s).sort((a, b) => a - b), [3, 4, 5]); // after 5 ticks: count 5, 4, 3
 });
 
@@ -76,15 +103,13 @@ test('a feedback loop without a flip-flop is an error', () => {
 
 test('Phasor at 480 Hz: a period of exactly 100 ticks', () => {
   const r = G.makeSheet(), b = G.builder(r, defs);
-  b.block('ph', 'comp', 4, 0, { def: 'Phasor' });
-  b.block('s1', 'scope', 12, 0); b.block('s2', 'scope', 12, 6);
+  const ph = b.block('ph', 'comp', 4, 0, { def: 'Phasor' });
   b.konst('ph.in0', 'left', 2, 480);
-  b.net('ph.out0', 's1.in0'); b.net('ph.out1', 's2.in0');
   const p = compile({ root: r, defs, values: {} });
   assert.ok(p.ok, JSON.stringify(p.errors));
   assert.strictEqual(p.nState, 1);
-  const { sc } = run(p, 1200);
-  const phase = Array.from(sc[0]);
+  const { tr } = run(p, 1200, null, null, [pin(ph, 'out', 0)]);
+  const phase = Array.from(tr[0]);
   assert.ok(Math.max(...phase) <= 1 && Math.min(...phase) >= 0);
   const wraps = phase.map((x, i) => (i > 0 && x < phase[i - 1] ? i : -1)).filter((i) => i > 0);
   assert.ok(wraps.length >= 10);
@@ -108,10 +133,10 @@ test('per-instance knob values are stored by path', () => {
 });
 
 test('two writers on one net is an error', () => {
+  // the editor can't do it (an input takes one wire), but a hand-edited file can
   const r = G.makeSheet(), b = G.builder(r, defs);
-  b.block('a', 'delay', 0, 0); b.block('c', 'delay', 0, 2);
-  const occ = G.occupancy(r, defs), rid = G.newRegion(r);
-  for (const [x, y] of [[2, 0], [3, 0], [3, 1], [3, 2], [2, 2]]) G.paint(r, occ, G.TOP, x, y, rid);
+  const a = b.block('a', 'delay', 0, 0), c = b.block('c', 'delay', 0, 6), z = b.block('z', 'delay', 8, 3);
+  r.wires.push({ id: 'w1', from: pin(a, 'out'), to: pin(z, 'in') }, { id: 'w2', from: pin(c, 'out'), to: pin(z, 'in') });
   const p = compile({ root: r, defs, values: {} });
   assert.ok(!p.ok);
   assert.match(p.errors[0].msg, /2 writers/);
@@ -130,69 +155,38 @@ test('generated code does not change when a knob turns', () => {
   const proj = L.exampleProject(2);
   const a = compile(proj);
   const k = Object.keys(a.knobState).find((x) => a.knobState[x] === 'ok' && !x.includes('/'));
-  const [rid] = [k];
-  proj.root.regions[rid].value = 7;
+  proj.root.blocks.find((x) => x.id === k).value = 7;
   const b = compile(proj);
   assert.strictEqual(a.code, b.code);
   assert.ok(Array.from(b.params).includes(7));
 });
 
 
-// A Sample block, a flip-flop after it, and scopes on both.
-function sampleSheet(loop) {
+// An In socket and a flip-flop after it; watch both.
+test('an In socket reads its input one sample per tick, on the clock that drives the flip-flops', () => {
   const r = G.makeSheet(), b = G.builder(r, defs);
-  b.block('song', 'sample', 0, 0, { sample: 'x', loop });
-  b.block('ff', 'delay', 14, 1);
-  b.block('sa', 'scope', 20, 4); b.block('sb', 'scope', 20, 10);
-  b.net('song.out0', ['ff.in0', 'sa.in0']);
-  b.net('ff.out0', 'sb.in0');
-  return { version: 2, root: r, defs, values: {} };
-}
-
-test('a sample stack emits one sample per tick and loops', () => {
-  const prog = compile(sampleSheet(true));
+  const inp = b.block('in', 'in', 0, 1, { name: 'in' }), ff = b.block('ff', 'delay', 14, 1);
+  b.net('in.out0', 'ff.in0');
+  const prog = compile({ version: 4, root: r, defs, values: {} });
   assert.ok(prog.ok, JSON.stringify(prog.errors));
-  assert.strictEqual(prog.nState, 2);                        // the flip-flop and the read position
-  assert.strictEqual(prog.players.length, 1);
-  const song = Float32Array.from([0.1, 0.2, 0.3]);
-  const { sc, s } = run(prog, 7, [song]);
-  assert.deepStrictEqual(Array.from(sc[0], (x) => +x.toFixed(3)), [0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1]);
-  // the flip-flop shows the sample from the previous tick: the same clock drives both
-  assert.deepStrictEqual(Array.from(sc[1], (x) => +x.toFixed(3)), [0, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3]);
-  assert.strictEqual(s[prog.players[0].s], 1);               // read position persists between blocks of ticks
-  const again = run(prog, 2, [song], s);
-  assert.deepStrictEqual(Array.from(again.sc[0], (x) => +x.toFixed(3)), [0.2, 0.3]);
+  assert.deepStrictEqual(prog.ins.map((x) => x.name), ['in']);
+  const { tr } = run(prog, 4, [Float32Array.from([0.1, 0.2, 0.3, 0.4])], null, [pin(inp, 'out'), pin(ff, 'out')]);
+  assert.deepStrictEqual(Array.from(tr[0], (x) => +x.toFixed(3)), [0.1, 0.2, 0.3, 0.4]);
+  assert.deepStrictEqual(Array.from(tr[1], (x) => +x.toFixed(3)), [0, 0.1, 0.2, 0.3]);
+  assert.deepStrictEqual(Array.from(run(prog, 2, null, null, [pin(inp, 'out')]).tr[0]), [0, 0], 'nothing linked: silence');
 });
-
-test('a sample stack can play once, and emits 0 with no WAV loaded', () => {
-  const prog = compile(sampleSheet(false));
-  const { sc } = run(prog, 5, [Float32Array.from([0.5, -0.5])]);
-  assert.deepStrictEqual(Array.from(sc[0]), [0.5, -0.5, 0, 0, 0]);
-  assert.deepStrictEqual(Array.from(run(prog, 3).sc[0]), [0, 0, 0]);
-  const empty = sampleSheet(true); delete empty.root.blocks[0].sample;
-  assert.ok(compile(empty).warnings.some((w) => /no WAV/.test(w.msg)));
-});
-
-test('the sample example compiles and its counter is named by path', () => {
-  const prog = compile(L.exampleProject(3));
-  assert.ok(prog.ok);
-  assert.strictEqual(prog.players[0].sample, 'demo:factory-song');
-  assert.ok(prog.regNames.includes(prog.players[0].path + '#pos'));
-});
-
 
 // ---- tuning library (Benson, chapter 5) -------------------------------------------
 const TU = require('../js/grid/tunings.js');
-// A one-off board: the named chip with constants on its inputs and a scope on each output.
+// A one-off board: the named chip with constants on its inputs; watch every output.
 function probe(defName, inputs, ticks) {
   const r = G.makeSheet(), b = G.builder(r, defs), def = defs[defName];
-  b.block('u', 'comp', 4, 2, { def: defName });
+  const u = b.block('u', 'comp', 4, 2, { def: defName });
   const ins = inputs.map((v, i) => b.konst(`u.in${i}`, 'left', 3, v));
-  const outs = G.portsOf(def, 'out').map((_, i) => { b.block('s' + i, 'scope', 20 + 12 * i, 30 + 6 * i); return i; });
-  for (let i = outs.length - 1; i >= 0; i--) b.net(`u.out${i}`, `s${i}.in0`);
-  const project = { version: 2, root: r, defs, values: {} };
+  const watch = G.portsOf(def, 'out').map((_, i) => pin(u, 'out', i));
+  const project = { version: 3, root: r, defs, values: {} };
   return {
-    run(vals, n) { vals.forEach((v, i) => { r.regions[ins[i]].value = v; }); const prog = compile(project); assert.ok(prog.ok, JSON.stringify(prog.errors)); return run(prog, n || ticks || 1).sc; },
+    run(vals, n) { vals.forEach((v, i) => { r.blocks.find((x) => x.id === ins[i]).value = v; }); const prog = compile(project); assert.ok(prog.ok, JSON.stringify(prog.errors)); return run(prog, n || ticks || 1, null, null, watch).tr; },
   };
 }
 const near = (a, b, eps) => Math.abs(a - b) < (eps || 1e-9);
@@ -253,14 +247,12 @@ test('the sine VCO is a clean ±1 sine at its frequency', () => {
 test('the comma pump sinks by 81/80 per round; the meantone pump does not', () => {
   for (const [name, perRound] of [['Comma Pump', 80 / 81], ['Meantone Pump', 1]]) {
     const r = G.makeSheet(), b = G.builder(r, defs);
-    b.block('ph', 'comp', 2, 2, { def: 'Phasor' }); b.block('p', 'comp', 12, 2, { def: name });
-    b.block('s0', 'scope', 30, 0); b.block('s1', 'scope', 30, 8); b.block('s2', 'scope', 30, 16);
+    b.block('ph', 'comp', 2, 2, { def: 'Phasor' }); const pp = b.block('p', 'comp', 12, 2, { def: name });
     b.konst('ph.in0', 'left', 3, 12000); b.konst('p.in1', 'left', 2, 100);          // a trigger every 4 ticks, tonic 100 Hz
     b.net('ph.out1', 'p.in0');
-    for (let i = 2; i >= 0; i--) b.net(`p.out${i}`, `s${i}.in0`);
-    const prog = compile({ version: 2, root: r, defs, values: {} });
+    const prog = compile({ version: 3, root: r, defs, values: {} });
     assert.ok(prog.ok, JSON.stringify(prog.errors));
-    const { sc } = run(prog, 4 * 16 + 4);
+    const { tr: sc } = run(prog, 4 * 16 + 4, null, null, [0, 1, 2].map((i) => pin(pp, 'out', i)));
     const roots = [1, 17, 33, 49, 65].map((t) => sc[0][t]);                           // the I chord, once per round
     roots.forEach((x, k) => assert.ok(near(x, 100 * Math.pow(perRound, k), 1e-9), `${name} round ${k}: ${x}`));
     // every chord is pure: the third is 5/4 or 6/5 of the root in just, the fifth 3/2
@@ -287,7 +279,7 @@ test('loading an example refreshes stale built-in blocks and keeps the user\'s o
   ff.type = 'add';                                   // the old design: no flip-flop in the loop
   const mine = G.makeDef('MyBlock', 4, 3, 8, [{ dir: 'in', row: 1, name: 'in' }, { dir: 'out', row: 1, name: 'out' }], '');
   stale.MyBlock = mine;
-  assert.ok(!compile({ version: 2, root: L.exampleProject(5).root, defs: stale, values: {} }).ok);   // the reported bug
+  assert.ok(!compile({ version: 3, root: L.exampleProject(5).root, defs: stale, values: {} }).ok);   // the reported bug
   for (let i = 0; i < L.EXAMPLES.length; i++) {
     const p = L.exampleProject(i, stale);
     assert.ok(compile(p).ok, L.EXAMPLES[i].title);

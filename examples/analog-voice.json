@@ -1,0 +1,68 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "example",
+  "meta": {
+    "title": "Analog voice",
+    "note": "A subtractive synth of analog modules patched with cables: clock, analog sequencer, glide, VCO, ladder filter, envelope and VCA. A Voltmeter turns the voltage into a number for the Out socket. Turn the sequencer knobs and the filter. Slide the clock down: the analog circuits slow down with it.",
+    "rate": 48000
+  },
+  "uses": {"Scaled Voltmeter": "3x3 in@0:range in@1:in out@1:out"},
+  "board": {
+    "nextId": 25,
+    "blocks": [
+      {"id": "b1", "type": "clock", "x": 0, "y": 0, "params": {"bpm": 120, "pw": 0.5}},
+      {
+        "id": "b2",
+        "type": "seq8",
+        "x": 5,
+        "y": 0,
+        "params": {
+          "k0": 0,
+          "k1": 0.25,
+          "k2": 0.5833,
+          "k3": 0.4167,
+          "k4": 0.5833,
+          "k5": 0.25,
+          "k6": 0.3333,
+          "k7": 0.0833,
+          "len": 8,
+          "range": 0,
+          "quant": 1
+        }
+      },
+      {"id": "b3", "type": "slew", "x": 20, "y": 0, "params": {"rise": 0.03, "fall": 0.03}},
+      {"id": "b4", "type": "lfo", "x": 23, "y": 0, "params": {"rate": 0.3, "amp": 3}},
+      {
+        "id": "b5",
+        "type": "vco",
+        "x": 28,
+        "y": 0,
+        "params": {"freq": -1, "fine": 0, "pw": 0.5, "fm": 0, "drift": 0, "track": 0}
+      },
+      {"id": "b6", "type": "mixer", "x": 35, "y": 0, "params": {"l1": 0.8, "l2": 0.4, "l3": 0, "l4": 0, "master": 0.8}},
+      {"id": "b7", "type": "adsr", "x": 0, "y": 14, "params": {"a": 0.005, "d": 0.3, "s": 0.4, "r": 0.25}},
+      {"id": "b8", "type": "vcf", "x": 5, "y": 14, "params": {"freq": 300, "res": 0.55, "cv": 0.35, "drive": 2}},
+      {"id": "b9", "type": "vca", "x": 11, "y": 14, "params": {"level": 1, "resp": 0.5}},
+      {"id": "b10", "type": "comp", "def": "Scaled Voltmeter", "x": 17, "y": 19},
+      {"id": "b11", "type": "out", "x": 22, "y": 20, "name": "out"}
+    ],
+    "wires": [
+      {"id": "w12", "from": "b1.o0", "to": "b2.i0", "style": {"color": "#e8c547"}},
+      {"id": "w13", "from": "b2.o0", "to": "b3.i0", "style": {"color": "#e5603d"}},
+      {"id": "w14", "from": "b3.o0", "to": "b5.i0", "style": {"color": "#5ec8e5"}},
+      {"id": "w15", "from": "b2.o1", "to": "b7.i0", "style": {"color": "#7bd389"}},
+      {"id": "w16", "from": "b4.o0", "to": "b5.i2", "style": {"color": "#c77dff"}},
+      {"id": "w17", "from": "b5.o2", "to": "b6.i0", "style": {"color": "#f28ab2"}},
+      {"id": "w18", "from": "b5.o3", "to": "b6.i1", "style": {"color": "#f0f0f0"}},
+      {"id": "w19", "from": "b6.o0", "to": "b8.i0", "style": {"color": "#e8c547"}},
+      {"id": "w20", "from": "b7.o0", "to": "b8.i1", "style": {"color": "#e5603d"}},
+      {"id": "w21", "from": "b7.o0", "to": "b9.i1", "style": {"color": "#5ec8e5"}},
+      {"id": "w22", "from": "b8.o0", "to": "b9.i0", "style": {"color": "#7bd389"}},
+      {"id": "w23", "from": "b9.o0", "to": "b10.i1", "style": {"color": "#c77dff"}},
+      {"id": "w24", "from": "b10.o0", "to": "b11.i0", "path": [[19,20],[20,20],[21,20],[22,20]]}
+    ]
+  },
+  "defs": {},
+  "values": {"b10/port.i0": 5}
+}

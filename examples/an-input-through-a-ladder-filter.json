@@ -1,0 +1,33 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "example",
+  "meta": {
+    "title": "An input through a ladder filter",
+    "note": "Sound from outside (an In socket: the microphone, or anything linked to it in PipeWire) becomes a voltage in the AWG, goes through an analog ladder filter swept by an LFO, and becomes a number again in the Voltmeter, for the Out socket.",
+    "rate": 48000
+  },
+  "uses": {"Scaled Voltmeter": "3x3 in@0:range in@1:in out@1:out"},
+  "board": {
+    "nextId": 14,
+    "blocks": [
+      {"id": "b1", "type": "in", "x": 9, "y": 3, "name": "in"},
+      {"id": "b2", "type": "awg", "x": 14, "y": 2},
+      {"id": "b3", "type": "gain", "x": 18, "y": 0, "params": {"k": 5}},
+      {"id": "b4", "type": "lfo", "x": 21, "y": 0, "params": {"rate": 0.2, "amp": 2}},
+      {"id": "b5", "type": "vcf", "x": 27, "y": 0, "params": {"freq": 700, "res": 0.8, "cv": 1, "drive": 1.2}},
+      {"id": "b6", "type": "comp", "def": "Scaled Voltmeter", "x": 34, "y": 5},
+      {"id": "b7", "type": "out", "x": 38, "y": 6, "name": "out"}
+    ],
+    "wires": [
+      {"id": "w8", "from": "b1.o0", "to": "b2.i0", "path": [[11,3],[12,3],[13,3],[14,3]]},
+      {"id": "w9", "from": "b2.o0", "to": "b3.i0", "style": {"color": "#e8c547"}},
+      {"id": "w10", "from": "b3.o0", "to": "b5.i0", "style": {"color": "#e5603d"}},
+      {"id": "w11", "from": "b4.o1", "to": "b5.i1", "style": {"color": "#5ec8e5"}},
+      {"id": "w12", "from": "b5.o0", "to": "b6.i1", "style": {"color": "#7bd389"}},
+      {"id": "w13", "from": "b6.o0", "to": "b7.i0", "path": [[36,6],[37,6],[38,6]]}
+    ]
+  },
+  "defs": {},
+  "values": {"b6/port.i0": 5}
+}

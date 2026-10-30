@@ -12,7 +12,7 @@
 
   const app = {
     project: null, compiled: null, running: null, snap: null,
-    version: 1, tool: 'select', layer: G.TOP,
+    version: 1, tool: 'select', mode: 'board',
     sel: null,            // Editor selection { F, blocks, cells, region }, or null
     hover: null, hotRegion: null, placing: null, pasting: null, drag: null, route: null,
     history: new E.History(200), clip: null,
@@ -67,52 +67,10 @@
   function recompile() {
     const c = GW.compile(app.project);
     app.compiled = c;
-    if (c.ok) { app.running = c; app.host.load(c, scopeWins(c)); fetchSamples(c); }
+    if (c.ok) { app.running = c; app.host.load(c); if (app.bridge) app.bridge.program(c); }
     updateBanner();
   }
 
-  // ---- sample stacks ------------------------------------------------------------
-  // The project stores only a sample's id; the samples live in IndexedDB (or, for
-  // the built-in song, are synthesized). Fetch whatever the program needs.
-  app.missing = new Set();
-  const fetching = new Set();
-  function fetchSamples(c) {
-    for (const pl of c.players) {
-      const id = pl.sample;
-      if (!id || app.host.lib.has(id) || fetching.has(id)) continue;
-      fetching.add(id);
-      GW.Samples.load(id).then((e) => {
-        fetching.delete(id);
-        if (e) { app.missing.delete(id); app.host.addSample(id, e.data); }
-        else app.missing.add(id);
-        app.view.dirty = true; updateBanner(); renderInspector();
-      });
-    }
-  }
-  const wavInput = $('#wav-input');
-  let wavTarget = null;   // {F, b}: the block a chosen file goes into
-  function pickWav(F, b) { wavTarget = { F, b }; wavInput.click(); }
-  wavInput.addEventListener('change', () => {
-    const f = wavInput.files[0]; wavInput.value = '';
-    if (f && wavTarget) loadWavInto(wavTarget.F, wavTarget.b, f);
-  });
-  async function loadWavInto(F, b, file) {
-    toast(`Decoding ${file.name}…`, 20000);
-    let e;
-    try { e = await GW.Samples.decode(file); } catch (err) { toast(`Could not decode ${file.name}: ${err && err.message || err}`); return; }
-    app.host.addSample(e.id, e.data);
-    app.missing.delete(e.id);
-    Object.assign(b, { sample: e.id, name: e.name });
-    selectBlock(F, b);
-    app.changed(); app.commit('load WAV'); renderInspector();
-    const secs = e.data.length / G.FS;
-    toast(`${e.name}: ${e.data.length.toLocaleString('en-US')} samples (${fmtTime(secs)}), one per tick.` +
-      (e.stored ? '' : ' It could not be saved in this browser, so you will need to load it again after a reload.'), 6000);
-  }
-  const fmtTime = (secs) => `${Math.floor(secs / 60)}:${(secs % 60).toFixed(1).padStart(4, '0')}`;
-  function scopeWins(c) {
-    return c.scopePaths.map((path) => { const b = blockAtPath(path); return (b && b.window) || 512; });
-  }
   function blockAtPath(path) {
     const parts = path.split('/');
     let sheet = app.project.root, b = null;
@@ -131,51 +89,82 @@
   }
 
   // ---- setting values (constants and knobs) -------------------------------------
-  // At the root a region's value is stored on the region; inside an instance it is
-  // stored per instance, by absolute path, so every factory keeps its own knobs.
-  function setRegionValue(F, rid, v) {
-    if (F.path === '') F.sheet.regions[rid].value = v;
-    else app.project.values[F.path + rid] = v;
-    app.changed(false);
+  // A knob is on a Constant (or Voltage) block, on an input port's default value,
+  // or on a module's panel. At the root (and on a block's workbench) turning it sets
+  // the value itself; inside an instance it is stored per instance, by path, so
+  // every copy keeps its own knobs. A knob target is { F, b } for a constant,
+  // { F, port: i } for input port i, or { F, b, param: id } for a module's knob.
+  const isConst = (b) => !!b && (b.type === 'const' || b.type === 'volts' || b.type === 'bits');
+  const portOf = (t) => G.portsOf(t.F.sheet, 'in')[t.port];
+  const paramSpec = (t) => G.MODULES[t.b.type].params.find((q) => q.id === t.param);
+  const knobKey = (t) => t.F.path + (t.param ? t.b.id + '#' + t.param : t.b ? t.b.id : G.ep('port', 'in', t.port));
+  const knobPin = (t) => t.F.path + (t.b ? G.ep(t.b.id, 'out', 0) : G.ep('port', 'in', t.port));
+  const knobOf = (t) => (t.param ? paramSpec(t) : t.b ? t.b.knob : portOf(t).knob);
+  const ownValue = (t) => (t.param ? (t.b.params && t.b.params[t.param] !== undefined ? t.b.params[t.param] : paramSpec(t).def) : t.b ? t.b.value : portOf(t).value) || 0;
+  const knobFrac = (t, v) => (t.param ? G.Analog.paramFrac(paramSpec(t), v) : GW.knobFrac(knobOf(t), v));
+  const knobFromFrac = (t, f) => (t.param ? G.Analog.paramValue(paramSpec(t), f) : GW.knobValue(knobOf(t), f));
+  // On a block's workbench (one instance on an empty board) knobs set the block's defaults.
+  const direct = (F) => F.path === '' || (app.curated && app.curated.kind === 'block' && F.path === 'b1/' && app.project.root.blocks.length === 1);
+  function knobValue(t) {
+    const ov = app.project.values[knobKey(t)];
+    return !direct(t.F) && ov !== undefined ? ov : ownValue(t);
   }
-  function regionValue(F, rid) {
-    const ov = app.project.values[F.path + rid];
-    return F.path !== '' && ov !== undefined ? ov : F.sheet.regions[rid].value;
+  function setKnobValue(t, v) {
+    if (t.param && t.F.path === '') { t.b.params = t.b.params || {}; t.b.params[t.param] = v; }
+    else if (t.param) app.project.values[knobKey(t)] = v;
+    else if (direct(t.F)) { if (t.b) t.b.value = v; else portOf(t).value = v; delete app.project.values[knobKey(t)]; }
+    else app.project.values[knobKey(t)] = v;
+    app.changed(!!(t.param && paramSpec(t).structural));
   }
+  function knobValueOf(t) {
+    if (!t.param) return knobValue(t);
+    const ov = app.project.values[knobKey(t)];
+    return t.F.path && ov !== undefined ? ov : ownValue(t);
+  }
+  app.knobValue = knobValue;
 
   // ---- selection -------------------------------------------------------------------
   const sameFrame = (a, b) => !!(a && b && a.path === b.path && a.sheet === b.sheet);
   function select(sel) {
-    app.sel = sel && (!E.isEmpty(sel) || sel.region) ? sel : null;
-    renderInspector(); updateToolbar(); app.view.dirty = true;
+    app.sel = sel && (!E.isEmpty(sel) || sel.net) ? sel : null;
+    renderInspector(true); updateToolbar(); app.view.dirty = true;
   }
   function selectBlock(F, b) { const s = E.emptySelection(F); s.blocks.add(b.id); select(s); }
   // The one block selected, if exactly one block (and nothing else) is.
   function selBlock() {
     const s = app.sel;
-    if (!s || s.blocks.size !== 1 || s.cells.size) return null;
+    if (!s || s.blocks.size !== 1 || s.wires.size) return null;
     const b = s.F.sheet.blocks.find((x) => x.id === [...s.blocks][0]);
     return b ? { F: s.F, b } : null;
   }
   // The net shown in the inspector after clicking a trace.
-  function selRegion() {
+  function selNet() {
     const s = app.sel;
-    return s && s.region && !s.blocks.size && s.F.sheet.regions[s.region] ? { F: s.F, rid: s.region } : null;
+    return s && s.net && !s.blocks.size && s.F.sheet.wires.some((w) => w.from === s.net) ? { F: s.F, net: s.net } : null;
   }
   // The board that keyboard commands apply to: the selection's, else the one under the pointer.
   const activeFrame = () => (app.sel ? app.sel.F : app.hover && isLive(app.hover.F) ? app.hover.F : app.view.rootFrame());
   // Is this frame's board still part of the project (not left over from before an undo or a load)?
   const isLive = (F) => F.sheet === app.project.root || Object.values(app.project.defs).includes(F.sheet);
+  // A pin as words: "Add b3 · a", "port Hz".
+  function pinName(F, e) {
+    const p = G.parseEp(e);
+    if (!p) return e;
+    if (p.b === 'port') { const port = G.portsOf(F.sheet, p.dir)[p.i]; return `port ${port ? port.name : p.i}`; }
+    const b = F.sheet.blocks.find((x) => x.id === p.b), pad = G.pinOf(F.sheet, app.project.defs, e);
+    const name = !b ? p.b : b.type === 'comp' ? b.def : G.info(b.type).title;
+    return `${name} ${p.b}${pad && pad.name ? ' · ' + pad.name : ''}`;
+  }
 
   // ---- undo --------------------------------------------------------------------------
   app.commit = (label) => {
-    if (app.project && app.history.record(JSON.stringify(app.project), label)) updateToolbar();
+    if (app.project && app.history.record(JSON.stringify(app.project), label)) { updateToolbar(); updatePalette(); updateCurated(); }   // the palette marks edited blocks
   };
   function restore(r, verb) {
     if (!r) { toast(`Nothing to ${verb.toLowerCase()}.`); return; }
     app.project = JSON.parse(r.state);
     app.sel = null; app.route = null; app.placing = null; app.pasting = null; app.drag = null; app.hover = null; app.hotRegion = null;
-    app.version++; app.changed(); updatePalette(); renderInspector(); updateToolbar();
+    app.version++; app.changed(); updatePalette(); renderInspector(true); updateToolbar(); updateCurated();
     toast(`${verb}: ${r.label}`, 1800);
   }
   app.undo = () => restore(app.history.undo(), 'Undo');
@@ -188,23 +177,24 @@
   function describe(sel) {
     const parts = [];
     if (sel.blocks.size) parts.push(plural(sel.blocks.size, 'block'));
-    if (sel.cells.size) parts.push(plural(sel.cells.size, 'trace cell'));
+    if (sel.wires.size) parts.push(plural(sel.wires.size, 'wire'));
     return parts.join(' and ');
   }
   function copySelection(cut) {
     const s = app.sel;
     if (E.isEmpty(s)) { toast('Nothing selected.'); return; }
-    app.clip = E.copy(app.project, s.F, s);
+    if (!s.blocks.size) { toast('Copy works on blocks (and the wires between them): select some blocks.'); return; }
+    app.clip = E.copy(app.project, s.F, s, routesOf(s.F));
     try { localStorage.setItem(CLIP_KEY, JSON.stringify(app.clip)); } catch (err) { /* memory only */ }
     if (cut) {
       E.remove(app.project, s.F, s);
       select(null); app.changed(); app.commit('cut ' + describe(s));
     }
-    toast(`${cut ? 'Cut' : 'Copied'} ${describe(s)}.`, 1800);
+    toast(`${cut ? 'Cut' : 'Copied'} ${plural(app.clip.blocks.length, 'block')}${app.clip.wires.length ? ' and ' + plural(app.clip.wires.length, 'wire') + ' between them' : ''}.`, 1800);
   }
   function clipboard() {
     if (app.clip) return app.clip;
-    try { const c = JSON.parse(localStorage.getItem(CLIP_KEY)); if (c && c.kind === 'samplefactory.clip') return c; } catch (err) { /* none */ }
+    try { const c = JSON.parse(localStorage.getItem(CLIP_KEY)); if (c && c.kind === 'samplefactory.clip2') return c; } catch (err) { /* none */ }
     return null;
   }
   function startPaste() {
@@ -225,8 +215,8 @@
   // Duplicate: paste a copy right next to the selection if there is room, else let the user place it.
   function duplicate() {
     const s = app.sel;
-    if (E.isEmpty(s)) { toast('Nothing selected.'); return; }
-    const clip = E.copy(app.project, s.F, s), bb = E.bounds(s.F, app.project.defs, s);
+    if (!s || !s.blocks.size) { toast('Select some blocks to duplicate.'); return; }
+    const clip = E.copy(app.project, s.F, s, routesOf(s.F)), bb = E.bounds(s.F, app.project.defs, { blocks: s.blocks, wires: new Set() }, routesOf(s.F));
     for (const [dx, dy] of [[0, clip.h + 1], [clip.w + 1, 0], [0, -clip.h - 1], [-clip.w - 1, 0], [2, 2]]) {
       if (!E.pasteProblem(app.project, s.F, clip, bb.x0 + dx, bb.y0 + dy)) {
         const r = E.paste(app.project, s.F, clip, bb.x0 + dx, bb.y0 + dy);
@@ -238,17 +228,35 @@
   }
   function nudge(dx, dy) {
     const s = app.sel;
-    if (E.isEmpty(s)) return;
+    if (!s || !s.blocks.size) return;
     const r = E.rubberMove(app.project, s.F, s, E.snapshot(s.F.sheet), dx, dy);
     if (!r) { toast('Something is in the way.', 1500); return; }
     select(r.sel); app.version++; app.changed(); app.commit('move ' + describe(r.sel));
-    if (r.unconnected.length) toast(`${plural(r.unconnected.length, 'pin')} could not be routed back.`, 3000);
   }
   function selectAll() {
     const F = activeFrame();
-    select(E.selectAll(F, app.project.defs));
+    select(E.selectAll(F));
     toast(`Selected ${describe(app.sel || E.emptySelection(F)) || 'nothing'}.`, 1500);
   }
+
+  // ---- what can be edited ----------------------------------------------------------
+  // A block is edited only where it is the open file: the design's own board, and,
+  // in the block editor, the inside of the block being edited. Zoomed into any
+  // other block you can look and turn its knobs (they are this design's settings),
+  // but a click or a drag acts on the block as a whole, on the board it sits on.
+  const benchBlock = () => (benchDef() ? app.project.root.blocks[0] : null);
+  app.benchBlock = benchBlock;
+  const editable = (F) => F.path === '' || (!!benchBlock() && F.path === benchBlock().id + '/' && F.parent && F.parent.path === '');
+  // The pointer as the editable board under it sees it.
+  function lift(h) {
+    if (!h || editable(h.F)) return h;
+    let F = h.F;
+    while (F.parent && !editable(F)) F = F.parent;
+    const wx = h.F.ox + h.fx * h.F.sc, wy = h.F.oy + h.fy * h.F.sc;
+    const fx = (wx - F.ox) / F.sc, fy = (wy - F.oy) / F.sc, x = Math.floor(fx), y = Math.floor(fy);
+    return { F, x, y, fx, fy, occ: app.view.geom(F.sheet).occ.get(G.key(x, y)), lifted: h };
+  }
+  app.lift = lift;
 
   // ---- pointer ------------------------------------------------------------------
   const canvas = $('#grid');
@@ -259,84 +267,113 @@
     b.x = h.x - Math.floor(fp.w / 2); b.y = h.y - Math.floor(fp.h / 2);
     return b;
   };
-  function regionAt(h, preferLayer) {
-    const k = G.key(h.x, h.y), sh = h.F.sheet;
-    const first = preferLayer || app.layer, second = first === G.TOP ? G.BOT : G.TOP;
-    if (sh[first][k]) return { rid: sh[first][k], layer: first };
-    if (sh[second][k]) return { rid: sh[second][k], layer: second };
-    return null;
-  }
+  const routesOf = (F) => app.view.routes(F.sheet);
+  // The knob at a cell: on a Constant, or beside an input port.
   function knobAt(h) {
-    for (const rid in h.F.sheet.regions) {
-      const kb = h.F.sheet.regions[rid].knob;
-      if (kb && kb.x === h.x && kb.y === h.y) return rid;
+    const o = h.occ;
+    if (o && o.block && (o.block.type === 'const' || o.block.type === 'volts') && o.block.knob) return { F: h.F, b: o.block };
+    const m = o && o.block && G.MODULES[o.block.type];
+    if (m && m.panel && h.fx !== undefined) {
+      const k = 1 / G.Analog.CELL_HP, lx = h.fx - o.block.x, ly = h.fy - o.block.y;
+      for (const q of m.panel.lay.knobs) if (Math.hypot(lx - q.x * k, ly - q.y * k) <= (q.r + 0.4) * k) return { F: h.F, b: o.block, param: q.id };
+    }
+    if (G.isDef(h.F.sheet)) {
+      for (const pad of G.innerPads(h.F.sheet)) {
+        if (pad.dir === 'in' && pad.x + 1 === h.x && pad.y === h.y && G.portsOf(h.F.sheet, 'in')[pad.idx].knob) return { F: h.F, port: pad.idx };
+      }
     }
     return null;
   }
+  // The pin under the pointer: its cell, or the tab of a composite block's pin,
+  // which straddles the block's edge (half of it lies in the next cell out).
+  function pinAt(h) {
+    const bench = h.F.path === '' ? benchBlock() : null;   // in the block editor its own pins lead nowhere: its inside is the work
+    if (h.occ && h.occ.pad) return bench && h.occ.block === bench ? null : G.endpointAt(h.F.sheet, app.project.defs, h.x, h.y);
+    if (h.fx === undefined) return null;
+    for (const b of h.F.sheet.blocks) {
+      if (b.type !== 'comp' || b === bench) continue;
+      for (const p of G.footprint(b, app.project.defs).pads) {
+        const ex = p.dir === 'in' ? p.x : p.x + 1;
+        if (Math.abs(h.fx - ex) < 0.3 && h.fy > p.y + 0.15 && h.fy < p.y + 0.85) return G.ep(b.id, p.dir, p.idx);
+      }
+    }
+    return null;
+  }
+  const netAtCell = (h) => E.netAt(h.F.sheet, routesOf(h.F), h.x, h.y);
   const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-  // Drop a WAV on the board: onto a Sample block to replace its song, or anywhere else for a new block.
-  canvas.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
-  canvas.addEventListener('drop', (e) => {
-    e.preventDefault();
-    const f = e.dataTransfer.files[0];
-    if (!f) return;
-    const p = pos(e), h = app.view.locate(p.x, p.y);
-    if (!h) return;
-    let b = h.occ && h.occ.block && h.occ.block.type === 'sample' ? h.occ.block : null;
-    if (!b) {
-      const ghost = Object.assign({ type: 'sample', rot: 0, loop: true }, { x: h.x - 5, y: h.y - 1 });
-      if (!G.canPlace(h.F.sheet, app.project.defs, ghost)) { toast('No room for a Sample block there (10×3 cells).'); return; }
-      b = G.addBlock(h.F.sheet, app.project.defs, ghost);
-      app.changed(); app.commit('place Sample');
-    }
-    loadWavInto(h.F, b, f);
-  });
-  // Select tool: drag on empty board to box-select, click to select (Shift adds or
-  // removes), drag a selected item to move the whole selection, drag a knob to turn
-  // it. Right-, middle- or Space-drag pans in every tool; the wheel zooms.
+  // Select tool, like patching a rack:
+  //   drag from a pin to a pin: a wire (from an input that has one: pick it up and move it, or drop it to remove it)
+  //   drag a block: move it (selected blocks move together; wires follow)
+  //   click a trace: select its wire and show its net; drag it: move that straight run sideways
+  //   drag a knob: turn it;  drag on empty board: box-select
+  // Right-, middle- or Space-drag pans in every tool; the wheel zooms.
   canvas.addEventListener('pointerdown', (e) => {
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
-    const p = pos(e), h = app.view.locate(p.x, p.y);
+    const p = pos(e), deep = app.view.locate(p.x, p.y), h = lift(deep);
     if (e.button === 1 || e.button === 2 || spaceDown || !h) { app.drag = { kind: 'pan', x: p.x, y: p.y }; setCursor(); return; }
     if (e.button !== 0) return;
+    // a knob inside a block (this design's setting for that copy) turns at any depth
+    const dk = deep !== h && !app.placing && !app.pasting && app.tool !== 'route' ? knobAt(deep) : null;
+    if (dk) {
+      const st = app.knobState(knobKey(dk));
+      if (st === 'ok') { app.drag = { kind: 'knob', t: dk, frac: knobFrac(dk, knobValueOf(dk)), y: p.y }; return; }
+    }
     if (app.pasting) { pasteAt(h, e.shiftKey); return; }
     if (app.placing) { placeAt(h, e.shiftKey); return; }
-    if (app.tool === 'erase') { app.drag = { kind: 'erase', F: h.F, last: null, both: e.shiftKey }; eraseTo(h); return; }
-    if (app.tool === 'route') { app.route ? routeCommit(h) : routeStart(h); return; }
-    if (app.tool === 'knob') { toggleKnob(h); return; }
-    const krid = knobAt(h);
-    if (krid) {
-      const st = app.knobState(h.F.path + krid);
-      if (st !== 'ok') { toast(st === 'written' ? 'This net is written by a block, so its handle is dead.' : 'This knob is overridden by a net outside the block.'); return; }
-      const kb = h.F.sheet.regions[krid].knob;
-      app.drag = { kind: 'knob', F: h.F, rid: krid, frac: GW.knobFrac(kb, regionValue(h.F, krid)), y: p.y };
+    if (app.tool === 'route') { routeClick(h); return; }
+    const gh = h.F.path === '' ? app.view.graphHit(h.fx, h.fy) : null;
+    app.pwSel = gh && gh.link ? gh.link.id : null;
+    if (gh && gh.port) { app.drag = { kind: 'pwlink', port: gh.port, at: { x: h.fx, y: h.fy } }; select(null); return; }
+    if (gh) { select(null); app.view.dirty = true; return; }
+    const kt = knobAt(h);
+    if (kt) {
+      const st = app.knobState(knobKey(kt));
+      if (st !== 'ok') { toast(st === 'written' ? 'This knob\'s net is driven by a block, so the knob is dead.' : 'This knob is overridden by a wire or a knob outside the block.'); return; }
+      app.drag = { kind: 'knob', t: kt, frac: knobFrac(kt, knobValueOf(kt)), y: p.y };
       return;
     }
-    const b = h.occ && h.occ.block, r = !b && regionAt(h);
-    if (b || r) {
-      const cur = app.sel && sameFrame(app.sel.F, h.F) ? app.sel : null;
-      const track = r ? E.trackAt(h.F.sheet, app.project.defs, r.layer, h.x, h.y).map(([l, x, y]) => E.ck(l, x, y)) : [];
-      const inSel = cur && (b ? cur.blocks.has(b.id) : cur.cells.has(E.ck(r.layer, h.x, h.y)));
-      if (e.shiftKey && cur) {                         // add to, or take from, the selection
-        if (b) { inSel ? cur.blocks.delete(b.id) : cur.blocks.add(b.id); }
-        else for (const c of track) inSel ? cur.cells.delete(c) : cur.cells.add(c);
-        if (r && !inSel) cur.region = r.rid;
-        select(cur);
+    const cur = app.sel && sameFrame(app.sel.F, h.F) ? app.sel : null;
+    const b = h.occ && h.occ.block, pin = pinAt(h);
+    // a pin starts a wire, unless its block is selected (then the drag moves it)
+    if (pin && !(b && cur && cur.blocks.has(b.id))) { wireStart(h, pin, e); return; }
+    // patch cables hang in front of everything
+    const cab = app.view.cableAt(h.F, h.fx, h.fy);
+    if (cab) {
+      if (e.shiftKey && cur) { cur.wires.has(cab.id) ? cur.wires.delete(cab.id) : cur.wires.add(cab.id); select(cur); return; }
+      const s = E.emptySelection(h.F); s.wires.add(cab.id); s.net = cab.from; select(s);
+      return;
+    }
+    if (b) {
+      if (e.shiftKey && cur) { cur.blocks.has(b.id) ? cur.blocks.delete(b.id) : cur.blocks.add(b.id); select(cur); return; }
+      if (!cur || !cur.blocks.has(b.id)) selectBlock(h.F, b);
+      app.drag = { kind: 'move', F: h.F, hx: h.x, hy: h.y, dx: 0, dy: 0, moved: false, sel0: app.sel, snap: E.snapshot(h.F.sheet) };
+      setCursor();
+      return;
+    }
+    const n = netAtCell(h);
+    if (n) {
+      if (e.shiftKey && cur) {
+        cur.wires.has(n.wire.id) ? cur.wires.delete(n.wire.id) : cur.wires.add(n.wire.id);
+        cur.net = n.net; select(cur);
         return;
       }
-      if (!inSel) {
-        const s = E.emptySelection(h.F);
-        if (b) s.blocks.add(b.id); else { track.forEach((c) => s.cells.add(c)); s.region = r.rid; }
-        select(s);
-      } else if (r && app.sel.region !== r.rid) { app.sel.region = r.rid; renderInspector(); }
-      app.drag = { kind: 'move', F: h.F, hx: h.x, hy: h.y, dx: 0, dy: 0, moved: false, sel0: app.sel, snap: E.snapshot(h.F.sheet), unconnected: [] };
+      const s = E.emptySelection(h.F);
+      s.wires.add(n.wire.id); s.net = n.net;
+      select(s);
+      app.drag = { kind: 'run', F: h.F, wire: n.wire.id, at: [h.x, h.y], snap: E.snapshot(h.F.sheet), d: 0, horizontal: runIsHorizontal(h, n.wire.id) };
       setCursor();
       return;
     }
     app.drag = { kind: 'marquee', F: h.F, x0: h.x, y0: h.y, x1: h.x, y1: h.y, add: e.shiftKey, sx: p.x, sy: p.y, far: false };
   });
+  // Is the trace through this cell running left-right (so a drag moves it up or down)?
+  function runIsHorizontal(h, wid) {
+    const r = routesOf(h.F).get(wid), i = r ? r.findIndex((c) => c[0] === h.x && c[1] === h.y) : -1;
+    if (i < 0) return true;
+    return (r[i - 1] && r[i - 1][1] === h.y) || (r[i + 1] && r[i + 1][1] === h.y);
+  }
 
   // Board coordinates of a screen point in a given frame, even when the pointer has
   // wandered into a deeper (or shallower) board.
@@ -345,32 +382,126 @@
     return { x: Math.floor((w.x - F.ox) / F.sc), y: Math.floor((w.y - F.oy) / F.sc) };
   }
 
+  // ---- wires by dragging ----------------------------------------------------------------
+  function wireStart(h, pin, e) {
+    const F = h.F, defs = app.project.defs;
+    const d = { kind: 'wire', F, preview: [], target: null };
+    if (G.isSource(pin)) d.from = pin;
+    else {
+      const old = G.wiresInto(F.sheet, pin)[0];
+      if (old && !e.altKey) { d.from = old.from; d.picked = old; d.snap = E.snapshot(F.sheet); G.removeWires(F.sheet, new Set([old.id])); app.version++; }
+      else d.to = pin;
+    }
+    d.start = G.pinOf(F.sheet, defs, d.from || d.to);
+    d.dom = d.start.dom;
+    d.cands = wireCandidates(F, d);
+    app.drag = d;
+    setCursor();
+  }
+  // Every pin on the board this wire could end on: inputs for a wire from an
+  // output (and the other way round), of the same kind of signal.
+  function wireCandidates(F, d) {
+    const sh = F.sheet, defs = app.project.defs, out = [], start = d.from || d.to;
+    const add = (e, p) => {
+      if (e === start) return;
+      const [a, z] = d.from ? [d.from, e] : [e, d.to];
+      if (G.wireProblem(sh, defs, a, z)) return;
+      out.push({ e, x: p.fx !== undefined ? p.fx : p.x + 0.5, y: p.fy !== undefined ? p.fy : p.y + 0.5 });
+    };
+    for (const b of sh.blocks) for (const p of G.footprint(b, defs).pads) add(G.ep(b.id, p.dir, p.idx), p);
+    if (G.isDef(sh)) for (const p of G.innerPads(sh)) add(G.ep('port', p.dir, p.idx), p);
+    return out;
+  }
+  // The trace a new wire would get: routed like the builder routes, sharing its net's copper.
+  function routeFor(F, from, to) {
+    const tmp = { id: '_new', from, to };
+    const sh = Object.assign({}, F.sheet, { wires: F.sheet.wires.concat([tmp]) });
+    return G.routeWire(sh, app.project.defs, tmp, routesOf(F));
+  }
+  function wireMove(d, h, p) {
+    const c = cellIn(d.F, p), defs = app.project.defs;
+    const w = app.view.toWorld(p.x, p.y);
+    d.at = { x: (w.x - d.F.ox) / d.F.sc, y: (w.y - d.F.oy) / d.F.sc };   // the loose end, in the wire's board
+    // the pin under the pointer, else the nearest pin it could connect to (it snaps
+    // within a cell and a half, or 18 pixels when zoomed out)
+    let e = h && sameFrame(h.F, d.F) ? pinAt(h) : null;
+    if (!e || e === (d.from || d.to)) {
+      const reach = Math.max(1.5, 18 / (app.view.cam.z * d.F.sc));
+      let best = null, bd = reach;
+      for (const q of d.cands || []) { const dist = Math.hypot(q.x - d.at.x, q.y - d.at.y); if (dist < bd) { bd = dist; best = q; } }
+      if (best) e = best.e;
+    }
+    const ends = e && (d.from ? [d.from, e] : [e, d.to]);
+    const ok = e && e !== (d.from || d.to) && !G.wireProblem(d.F.sheet, defs, ends[0], ends[1]);
+    d.target = ok ? e : null;
+    d.wrong = e && !ok && e !== (d.from || d.to) ? G.wireProblem(d.F.sheet, defs, ends[0], ends[1]) : null;
+    if (d.dom === 'analog') { d.preview = []; return; }
+    if (ok) d.preview = routeFor(d.F, d.from || e, d.from ? e : d.to) || [];
+    else {
+      const a = [d.start.x, d.start.y], cells = [a];
+      let [x, y] = a;
+      while (x !== c.x) { x += Math.sign(c.x - x); cells.push([x, y]); }
+      while (y !== c.y) { y += Math.sign(c.y - y); cells.push([x, y]); }
+      d.preview = cells;
+    }
+    if (d.target && !d.from) d.preview = d.preview.slice().reverse();
+    void defs;
+  }
+  function wireEnd(d) {
+    const F = d.F;
+    if (!d.target) {
+      if (d.wrong) toast(d.wrong, 3000);
+      if (d.picked) { app.version++; app.changed(); app.commit('remove wire'); toast('Wire removed.', 1500); }
+      return;
+    }
+    const from = d.from || d.target, to = d.from ? d.target : d.to;
+    const replaced = G.wiresInto(F.sheet, to).length && !(d.picked && d.picked.to === to);
+    const cable = d.dom === 'analog';
+    const w = G.addWire(F.sheet, from, to, cable ? null : routeFor(F, from, to));
+    if (!w) return;
+    if (d.picked && d.picked.style) w.style = clone(d.picked.style);
+    else if (cable) w.style = { color: G.CABLE_COLORS[F.sheet.wires.filter((x) => x.style && x.style.color).length % G.CABLE_COLORS.length] };
+    const s = E.emptySelection(F); s.wires.add(w.id); s.net = from;
+    app.version++; app.changed(); app.commit(d.picked ? 'move wire' : 'wire');
+    select(s);
+    if (replaced) toast('That input already had a wire; it has been replaced (an input takes one wire).', 3000);
+  }
+
   canvas.addEventListener('pointermove', (e) => {
     const p = pos(e), d = app.drag;
     if (d && d.kind === 'pan') { app.view.pan(p.x - d.x, p.y - d.y); d.x = p.x; d.y = p.y; }
-    const h = app.view.locate(p.x, p.y);
-    app.hover = h;
+    const deep = app.view.locate(p.x, p.y), h = lift(deep);
+    app.hover = h; app.hoverDeep = deep;
     if (app.route && h) routePreview(h);
-    if (d && d.kind === 'erase' && h) eraseTo(h);
+    if (d && d.kind === 'wire') wireMove(d, h, p);
+    if (d && d.kind === 'pwlink') { const w = app.view.toWorld(p.x, p.y); d.at = { x: w.x, y: w.y }; }
     if (d && d.kind === 'knob') {
-      const kb = d.F.sheet.regions[d.rid].knob;
       d.frac = Math.min(1, Math.max(0, d.frac - (p.y - d.y) / 200 * (e.shiftKey ? 0.1 : 1)));
       d.y = p.y;
-      setRegionValue(d.F, d.rid, GW.knobValue(kb, d.frac));
+      setKnobValue(d.t, knobFromFrac(d.t, d.frac));
     }
     if (d && d.kind === 'move' && app.sel) {
-      // Always from the board as it was at the start of the drag; blocks drag their
-      // traces along (rubber-banding). Try the whole offset, then each axis alone,
-      // so the selection slides along obstacles.
+      // Always from the board as it was at the start of the drag; wires follow.
+      // Try the whole offset, then each axis alone, so the selection slides along obstacles.
       const c = cellIn(d.F, p), wx = c.x - d.hx, wy = c.y - d.hy;
       if (wx !== d.dx || wy !== d.dy) {
         let done = false;
         for (const [ox, oy] of [[wx, wy], [wx, d.dy], [d.dx, wy]]) {
           if (ox === d.dx && oy === d.dy) continue;
           const r = E.rubberMove(app.project, d.F, d.sel0, d.snap, ox, oy);
-          if (r) { app.sel = r.sel; d.dx = ox; d.dy = oy; d.unconnected = r.unconnected; d.moved = true; done = true; break; }
+          if (r) { app.sel = r.sel; d.dx = ox; d.dy = oy; d.moved = true; done = true; break; }
         }
-        if (!done) { const r = E.rubberMove(app.project, d.F, d.sel0, d.snap, d.dx, d.dy); if (r) app.sel = r.sel; d.blocked = true; }
+        if (!done) { E.rubberMove(app.project, d.F, d.sel0, d.snap, d.dx, d.dy); d.blocked = true; }
+        app.version++;
+      }
+    }
+    if (d && d.kind === 'run') {
+      // reshape: the straight run under the pointer follows it sideways
+      const c = cellIn(d.F, p), off = d.horizontal ? c.y - d.at[1] : c.x - d.at[0];
+      if (off !== d.d) {
+        Object.assign(d.F.sheet, JSON.parse(JSON.stringify(d.snap)));
+        d.d = off;
+        if (off) d.changed = E.dragRun(d.F.sheet, app.project.defs, d.wire, d.at, off, G.routesOf(d.F.sheet, app.project.defs));
         app.version++;
       }
     }
@@ -379,8 +510,8 @@
       d.x1 = c.x; d.y1 = c.y;
       if (Math.hypot(p.x - d.sx, p.y - d.sy) > 4) d.far = true;
     }
-    const r = h && regionAt(h);
-    app.hotRegion = r ? { path: h.F.path, rid: r.rid } : null;
+    const n = h && !(h.occ && h.occ.block) ? netAtCell(h) : null;
+    app.hotRegion = n ? { path: h.F.path, rid: n.net } : null;
     if (!d) setCursor(h);
     updateStatus();
     app.view.dirty = true;
@@ -395,30 +526,30 @@
       if (!d.far) { if (!d.add) select(null); }       // a click on empty board
       else {
         const base = d.add && app.sel && sameFrame(app.sel.F, d.F) ? app.sel : null;
-        select(E.selectRect(d.F, app.project.defs, d, base));
+        select(E.selectRect(d.F, app.project.defs, d, base, routesOf(d.F)));
       }
     }
-    if (d.kind === 'move' && d.moved && (d.dx || d.dy)) {
-      app.changed(); app.commit('move ' + describe(app.sel)); renderInspector();
-      if (d.unconnected.length) toast(`${plural(d.unconnected.length, 'pin')} could not be routed back to ${d.unconnected.length === 1 ? 'its net' : 'their nets'}: route ${d.unconnected.length === 1 ? 'it' : 'them'} by hand (W).`, 5000);
-    } else if (d.kind === 'move' && d.blocked && !d.moved) toast('Something is in the way.', 1500);
-    if (d.kind === 'erase') { app.changed(); app.commit('erase'); }
+    if (d.kind === 'wire') wireEnd(d);
+    if (d.kind === 'pwlink') pwLinkEnd(d);
+    if (d.kind === 'move' && d.moved && (d.dx || d.dy)) { app.changed(); app.commit('move ' + describe(app.sel)); renderInspector(); }
+    else if (d.kind === 'move' && d.blocked && !d.moved) toast('Something is in the way.', 1500);
+    if (d.kind === 'run' && d.d) { app.changed(); app.commit('reshape trace'); }
     if (d.kind === 'knob') app.commit('turn knob');
     app.view.dirty = true;
   });
   canvas.addEventListener('pointerleave', () => { if (!app.drag) { app.hover = null; app.hotRegion = null; app.view.dirty = true; updateStatus(); } });
 
-  // Cursor feedback: what a click here would do.
+  // Cursor feedback: what a press here would do.
   function setCursor(h) {
     let c = 'default';
     const d = app.drag;
-    if (d) c = d.kind === 'pan' ? 'grabbing' : d.kind === 'move' ? 'move' : d.kind === 'knob' ? 'ns-resize' : 'crosshair';
+    if (d) c = d.kind === 'pan' ? 'grabbing' : d.kind === 'move' ? 'move' : d.kind === 'knob' ? 'ns-resize' : d.kind === 'run' ? (d.horizontal ? 'row-resize' : 'col-resize') : 'crosshair';
     else if (spaceDown) c = 'grab';
-    else if (app.placing || app.pasting || app.tool === 'route' || app.tool === 'erase') c = 'crosshair';
-    else if (app.tool === 'knob') c = 'cell';
-    else if (h && knobAt(h)) c = 'ns-resize';
+    else if (app.placing || app.pasting || app.tool === 'route') c = 'crosshair';
+    else if ((h && knobAt(h)) || (app.hoverDeep && app.hoverDeep !== h && knobAt(app.hoverDeep))) c = 'ns-resize';
+    else if (h && pinAt(h) && !(h.occ && h.occ.block && app.sel && app.sel.blocks.has(h.occ.block.id))) c = 'crosshair';
     else if (h && h.occ && h.occ.block) c = 'move';
-    else if (h && regionAt(h)) c = 'pointer';
+    else if (h && netAtCell(h)) c = runIsHorizontal(h, netAtCell(h).wire.id) ? 'row-resize' : 'col-resize';
     canvas.style.cursor = c;
   }
 
@@ -429,19 +560,66 @@
   }, { passive: false });
 
   canvas.addEventListener('dblclick', (e) => {
-    const p = pos(e), h = app.view.locate(p.x, p.y);
+    const p = pos(e), deep = app.view.locate(p.x, p.y), h = lift(deep);
     if (!h) return;
     if (app.tool === 'route') return;
-    const b = h.occ && h.occ.block;
-    if (b && b.type === 'comp') { zoomToBlock(h.F, b); return; }
-    if (b && b.type === 'sample') { pickWav(h.F, b); return; }
-    const krid = knobAt(h);
-    if (krid && app.knobState(h.F.path + krid) === 'ok') {
-      const kb = h.F.sheet.regions[krid].knob;
-      const s = prompt(`Value for "${kb.label || krid}" (${kb.min} … ${kb.max})`, regionValue(h.F, krid));
-      if (s !== null && Number.isFinite(Number(s))) { setRegionValue(h.F, krid, Number(s)); app.commit('set knob'); }
+    const dk = deep !== h ? knobAt(deep) : null;
+    if (dk && dk.param) { setKnobValue(dk, paramSpec(dk).def); app.commit('reset knob'); renderInspector(); return; }
+    const kt = knobAt(h), b = h.occ && h.occ.block;
+    if (kt && kt.param) { const p = paramSpec(kt); setKnobValue(kt, p.def); app.commit('reset knob'); renderInspector(); return; }
+    if (b && (b.type === 'in' || b.type === 'out')) {
+      const nm = prompt(`Name of this ${b.type === 'in' ? 'input' : 'output'} socket`, b.name || b.type);
+      if (nm) { b.name = nm.trim() || b.type; app.changed(); app.commit('rename socket'); renderInspector(); }
+      return;
     }
+    if (b && b.type === 'bits') {
+      const t = { F: h.F, b }, w = Math.max(1, Math.min(32, b.width || 8));
+      const sv = prompt(`Value (${w} bits: 0 … ${Math.pow(2, w) - 1}, or 0b…, 0x…)`, knobValue(t));
+      if (sv !== null && Number.isFinite(Number(sv))) { setKnobValue(t, GW.word(Number(sv), w)); app.changed(); app.commit('set bits'); renderInspector(); }
+      return;
+    }
+    if (!b && toggleVia(h)) return;
+    if (kt || (b && (b.type === 'const' || b.type === 'volts'))) {
+      const t = kt || { F: h.F, b };
+      if (app.knobState(knobKey(t)) !== 'ok' && knobOf(t)) return;
+      const k = knobOf(t);
+      const s = prompt(`Value${k && k.label ? ' for "' + k.label + '"' : ''}${k ? ` (${k.min} … ${k.max})` : ''}`, knobValue(t));
+      if (s !== null && Number.isFinite(Number(s))) { setKnobValue(t, Number(s)); app.commit('set value'); renderInspector(); }
+      return;
+    }
+    if (b && b.type === 'comp') { zoomToBlock(h.F, b); return; }
   });
+  // A via by hand: double-click a float trace to change layer there; again to remove it.
+  function toggleVia(h) {
+    const n = netAtCell(h);
+    if (!n || G.domainAt(h.F.sheet, app.project.defs, n.net) !== 'float') return false;
+    const routes = routesOf(h.F), ws = h.F.sheet.wires.filter((w) => w.from === n.net);
+    let hit = false;
+    for (const w of ws) {
+      const r = routes.get(w.id), i = r ? r.findIndex((c) => c[0] === h.x && c[1] === h.y) : -1;
+      if (i <= 0 || i >= r.length - 1) continue;
+      w.path = r.map(([x, y]) => [x, y]);
+      w.style = w.style || {};
+      const vias = (w.style.vias || []).slice(), at = vias.indexOf(i);
+      if (at >= 0) vias.splice(at, 1); else vias.push(i);
+      w.style.vias = vias.sort((a, b) => a - b);
+      hit = true;
+    }
+    if (!hit) return false;
+    app.version++; app.changed(); app.commit('via'); renderInspector();
+    return true;
+  }
+  // Edit block…: open a block in the block editor. One the library doesn't have yet
+  // (made in this design, or this design's own version) is saved there first.
+  async function editBlock(name) {
+    const file = app.library.fileOf[name];
+    if (file && blockStatus()[name] !== 'edited') { await app.files.openFile('library', file); return; }
+    if (!app.curator) { toast(`"${name}" is not a library file this page can open; save it to the library with Save… first.`, 6000); return; }
+    const verb = file ? 'save your changes to it in the library' : 'add it to the library';
+    if (!confirm(`To edit "${name}" in the block editor, ${verb} first? (Every design that uses the library's ${name} gets this version.)`)) return;
+    try { await saveBlock(name, file || GW.Format.slug(name) + '.json'); await app.reloadCatalogue(); } catch (err) { toast('Could not save: ' + err.message, 6000); return; }
+    await app.files.openFile('library', app.library.fileOf[name]);
+  }
   function zoomToBlock(F, b) {
     const fp = G.footprint(b, app.project.defs);
     app.view.fitRect(F.ox + b.x * F.sc, F.oy + b.y * F.sc, F.ox + (b.x + fp.w) * F.sc, F.oy + (b.y + fp.h) * F.sc, 0.04);
@@ -452,11 +630,34 @@
     else app.view.fitAll();
   }
 
-  // ---- routing ----------------------------------------------------------------------
-  // Like a PCB router: click on a pin, a trace or empty board to start; the trace
-  // follows the cursor as an L (/ flips the corner); click to fix a corner; ending
-  // on a pin or another trace connects to it. Tab drops a via and changes layer.
-  // A trace may not cross another net on the same layer: that is what layers are for.
+  // ---- PipeWire links: from a port of another program to a port, or to a socket ------------
+  function pwLinkEnd(d) {
+    const br = app.bridge, h = app.hover;
+    if (!br || !h || h.F.path !== '') return;
+    const gh = app.view.graphHit(h.fx, h.fy);
+    let other = gh && gh.port;
+    const b = h.occ && h.occ.block;
+    if (!other && b && (b.type === 'in' || b.type === 'out')) other = br.selfPort(b.type, b.name || b.type);
+    if (!other) return;
+    if (other.dir === d.port.dir) { toast('A link goes from an output port to an input port.'); return; }
+    const [o, i] = d.port.dir === 'out' ? [d.port, other] : [other, d.port];
+    br.link(o.id, i.id);
+  }
+  app.bridgeChanged = () => { updateBridgeButton(); renderInspector(); };
+  function updateBridgeButton() {
+    const b = $('#btn-bridge'), br = app.bridge;
+    b.classList.toggle('on', !!(br && br.connected));
+    b.textContent = br && br.connected ? 'PipeWire ●' : 'PipeWire';
+  }
+  $('#btn-bridge').addEventListener('click', () => {
+    if (!app.bridge) app.bridge = new GW.Bridge(app);
+    if (app.bridge.connected) app.bridge.disconnect(); else app.bridge.connect();
+  });
+
+  // ---- the Wire tool: a trace drawn corner by corner -----------------------------------
+  // Click a pin (or a trace, to branch from its net) to start; click to place
+  // corners (/ flips the corner); click a pin to finish. The wire keeps exactly the
+  // trace you drew. Esc cancels.
   function lPath(a, b, hFirst) {
     const cells = [[a[0], a[1]]];
     let [x, y] = a;
@@ -465,115 +666,85 @@
     if (hFirst) { stepX(); stepY(); } else { stepY(); stepX(); }
     return cells;
   }
-  // Index of the last cell the trace can reach before something is in the way.
-  function reach(F, rid, layer, cells) {
-    const sh = F.sheet, occ = app.view.geom(sh).occ;
-    let good = 0;
-    for (let i = 1; i < cells.length; i++) {
-      const [x, y] = cells[i], k = G.key(x, y), end = i === cells.length - 1;
-      const other = sh[layer][k], o = layer === G.TOP ? occ.get(k) : null;
-      if (!G.inBounds(sh, x, y) || (o && !o.pad)) break;          // off the board, or an IC body
-      if (other && other !== rid && !end) break;                  // crossing another net
-      if (o && o.pad && other !== rid && !end) break;             // running over a pin would connect it
-      good = i;
+  function routeClick(h) {
+    const r = app.route, pin = pinAt(h);
+    if (!r) {
+      if (pin) { app.route = { F: h.F, from: G.isSource(pin) ? pin : null, to: G.isSource(pin) ? null : pin, cells: [[h.x, h.y]], hFirst: true }; routePreview(h); return; }
+      const n = netAtCell(h);
+      if (n) {   // branch from a trace: the new wire shares the net's copper up to here
+        const route = routesOf(h.F).get(n.wire.id), i = route.findIndex((c) => c[0] === h.x && c[1] === h.y);
+        app.route = { F: h.F, from: n.net, to: null, cells: route.slice(0, i + 1).map(([x, y]) => [x, y]), hFirst: true };
+        routePreview(h); return;
+      }
+      toast('Start on a pin, or on a trace to branch from it.');
+      return;
     }
-    return good;
-  }
-  function routeStart(h) {
-    const sh = h.F.sheet, k = G.key(h.x, h.y), o = app.view.geom(sh).occ.get(k);
-    if (!G.inBounds(sh, h.x, h.y) || (app.layer === G.TOP && o && !o.pad)) { toast('Start on a pin, a trace, or empty board.'); return; }
-    app.route = { F: h.F, layer: app.layer, rid: sh[app.layer][k] || null, last: [h.x, h.y], hFirst: true, preview: null };
+    if (!sameFrame(h.F, r.F)) return;
+    const last = r.cells[r.cells.length - 1], leg = lPath(last, [h.x, h.y], r.hFirst).slice(1);
+    const fits = pin && (r.from ? !G.isSource(pin) : G.isSource(pin));
+    if (fits) {
+      let cells = G.tidy(r.cells.concat(leg));
+      const from = r.from || pin, to = r.from ? pin : r.to;
+      if (!r.from) cells = cells.reverse();
+      const replaced = G.wiresInto(r.F.sheet, to).length;
+      const w = G.addWire(r.F.sheet, from, to, cells);
+      app.route = null;
+      if (w) {
+        const s = E.emptySelection(r.F); s.wires.add(w.id); s.net = from;
+        app.version++; app.changed(); app.commit('draw wire'); select(s);
+        if (replaced) toast('That input already had a wire; it has been replaced.', 3000);
+      }
+      return;
+    }
+    if (pin) { toast(r.from ? 'Finish on an input (a block\'s left side, or an output port).' : 'Finish on an output.'); return; }
+    r.cells = G.tidy(r.cells.concat(leg));   // a corner
     routePreview(h);
   }
   function routePreview(h) {
     const r = app.route;
-    if (!r || h.F.path !== r.F.path || h.F.sheet !== r.F.sheet) return;
-    const cells = lPath(r.last, [h.x, h.y], r.hFirst);
-    r.preview = { cells, good: reach(r.F, r.rid, r.layer, cells) };
+    if (!r || !sameFrame(h.F, r.F)) return;
+    const last = r.cells[r.cells.length - 1];
+    r.preview = r.cells.concat(lPath(last, [h.x, h.y], r.hFirst).slice(1));
+    const pin = pinAt(h);
+    r.target = pin && (r.from ? !G.isSource(pin) : G.isSource(pin)) ? pin : null;
     app.view.dirty = true;
   }
-  function routeCommit(h) {
-    const r = app.route;
-    routePreview(h);
-    if (!r.preview) return;
-    const sh = r.F.sheet, occ = G.occupancy(sh, app.project.defs);
-    const cells = r.preview.cells.slice(0, r.preview.good + 1);
-    const [ex, ey] = cells[cells.length - 1], ek = G.key(ex, ey);
-    const endsOn = sh[r.layer][ek], endPad = r.layer === G.TOP && occ.get(ek) && occ.get(ek).pad;
-    if (!r.rid) r.rid = G.newRegion(sh);
-    for (const [x, y] of cells) G.paint(sh, occ, r.layer, x, y, r.rid);
-    const blocked = r.preview.good < r.preview.cells.length - 1;
-    const connected = cells.length > 1 && ((endsOn && endsOn !== r.rid) || endPad);
-    r.last = [ex, ey];
-    app.version++; app.changed(); app.commit('route');
-    if (blocked) toast('Something is in the way. Go around it, or press Tab to drop a via and pass under on the other layer.');
-    else if (connected || cells.length === 1) endRoute();
-    else routePreview(h);
-  }
   function endRoute() { app.route = null; app.view.dirty = true; }
-
-  function eraseTo(h) {
-    const d = app.drag;
-    if (h.F.path !== d.F.path || h.F.sheet !== d.F.sheet) return;
-    let [x, y] = d.last || [h.x, h.y];
-    const hit = (cx, cy) => {
-      for (const l of d.both ? [G.TOP, G.BOT] : [app.layer]) G.erase(d.F.sheet, l, cx, cy);
-    };
-    hit(x, y);
-    while (x !== h.x || y !== h.y) {
-      if (x !== h.x) x += Math.sign(h.x - x); else y += Math.sign(h.y - y);
-      hit(x, y);
-    }
-    d.last = [h.x, h.y]; app.version++;
-  }
-  // Tab: change layer; while routing, drop a via where the trace is.
-  function toggleLayer() {
-    const r = app.route, next = app.layer === G.TOP ? G.BOT : G.TOP;
-    if (r) {
-      const sh = r.F.sheet, occ = G.occupancy(sh, app.project.defs), [x, y] = r.last;
-      if (occ.has(G.key(x, y))) { toast('No via on a pin or under an IC.'); return; }
-      if (sh[next][G.key(x, y)] && sh[next][G.key(x, y)] !== r.rid) { toast('Another net is on the other layer here.'); return; }
-      if (!r.rid) { r.rid = G.newRegion(sh); G.paint(sh, occ, r.layer, x, y, r.rid); }
-      G.paint(sh, occ, next, x, y, r.rid);
-      r.layer = next;
-      app.version++; app.changed(); app.commit('via');
-    }
-    app.layer = next;
-    updateToolbar(); app.view.dirty = true;
-  }
-
-  function toggleKnob(h) {
-    const r = regionAt(h);
-    if (!r) { toast('Click a region to give it a handle.'); return; }
-    const reg = h.F.sheet.regions[r.rid];
-    if (reg.knob) { delete reg.knob; app.changed(false); app.version++; app.commit('remove handle'); return; }
-    if (written(h.F.path + r.rid)) { toast('This register is written by a block. Only unwritten registers can have handles.'); return; }
-    const v = regionValue(h.F, r.rid);
-    reg.knob = { x: h.x, y: h.y, label: '', min: v < 0 ? 2 * v : 0, max: v > 0 ? 2 * v : (v < 0 ? 0 : 1), scale: 'lin' };
-    const s = E.emptySelection(h.F); s.region = r.rid; select(s);
-    app.version++; app.changed(); app.commit('add handle');
-  }
 
   function placeAt(h, keep) {
     const b = app.ghost(h);
     if (b.type === 'comp' && h.F.def && (b.def === h.F.def.name || G.uses(app.project.defs, b.def, h.F.def.name))) {
       toast(`"${b.def}" can't go inside itself.`); return;
     }
-    if (!G.canPlace(h.F.sheet, app.project.defs, b)) { toast('No room: an IC can only sit where traces touch its pins.'); return; }
-    const nb = G.addBlock(h.F.sheet, app.project.defs, { type: b.type, def: b.def, x: b.x, y: b.y, rot: b.rot,
-      window: b.type === 'scope' ? 512 : undefined, loop: b.type === 'sample' ? true : undefined });
+    if (!G.canPlace(h.F.sheet, app.project.defs, b)) { toast('No room: blocks can\'t overlap.'); return; }
+    const props = { type: b.type, def: b.def, x: b.x, y: b.y, rot: b.rot };
+    if (b.type === 'const') Object.assign(props, { value: 1, knob: { label: '', min: 0, max: 1, scale: 'lin' } });
+    if (b.type === 'volts') Object.assign(props, { value: 0, knob: { label: '', min: -10, max: 10, scale: 'lin' } });
+    if (b.type === 'bits') Object.assign(props, { value: 0, width: 8 });
+    if (b.type === 'split' || b.type === 'join') props.parts = [1, 1, 1, 1];
+    if (b.type === 'table') props.points = [[0, 0], [1, 1]];
+    if (G.MODULES[b.type]) { props.params = G.MODULES[b.type].defaults(); props.rot = 0; }
+    if (b.type === 'in' || b.type === 'out') {
+      const names = new Set(app.project.root.blocks.filter((x) => x.type === b.type).map((x) => x.name));
+      let n = 1; while (names.has(b.type + (n > 1 ? n : ''))) n++;
+      props.name = b.type + (n > 1 ? n : '');
+    }
+    const nb = G.addBlock(h.F.sheet, app.project.defs, props);
     selectBlock(h.F, nb);
-    if (nb.type === 'sample') pickWav(h.F, nb);
     if (!keep) app.placing = null;
     updatePalette(); app.changed(); app.commit('place ' + (nb.def || G.info(nb.type).title));
   }
 
-  // Delete removes the selection; with Shift, a clicked trace's whole net.
+  // Delete removes the selection; with Shift, the whole net of a clicked trace.
   function deleteSelection(wholeNet) {
+    if (app.pwSel && app.bridge) { app.bridge.unlink(app.pwSel); app.pwSel = null; return; }
     const s = app.sel;
     if (!s) return;
-    const reg = selRegion();
-    if (wholeNet && reg) { G.removeRegion(s.F.sheet, reg.rid); select(null); app.changed(); app.commit('delete net'); return; }
+    const n = selNet();
+    if (wholeNet && n) {
+      G.removeWires(s.F.sheet, new Set(s.F.sheet.wires.filter((w) => w.from === n.net).map((w) => w.id)));
+      select(null); app.changed(); app.commit('delete net'); return;
+    }
     if (E.isEmpty(s)) return;
     E.remove(app.project, s.F, s);
     select(null); app.changed(); app.commit('delete ' + describe(s));
@@ -583,27 +754,38 @@
     const one = selBlock();
     if (!one) { if (app.sel) toast('Select a single atom to rotate it.'); return; }
     const { F, b } = one;
-    if (b.type === 'comp') { toast('Composite blocks cannot be rotated.'); return; }
+    if (b.type === 'comp' || G.MODULES[b.type]) { toast(b.type === 'comp' ? 'Composite blocks cannot be rotated.' : 'Modules and converters cannot be rotated.'); return; }
     const trial = Object.assign({}, b, { rot: ((b.rot || 0) + 1) & 3 });
     if (!G.canPlace(F.sheet, app.project.defs, trial, b)) { toast('No room to rotate here.'); return; }
-    b.rot = trial.rot; app.changed(); app.commit('rotate');
+    b.rot = trial.rot;
+    for (const w of G.wiresAt(F.sheet, G.ep(b.id, 'in', 0)).concat(F.sheet.wires.filter((x) => G.parseEp(x.from).b === b.id || G.parseEp(x.to).b === b.id))) delete w.path;
+    G.fixRoutes(F.sheet, app.project.defs);
+    app.changed(); app.commit('rotate');
   }
 
   // ---- keyboard -----------------------------------------------------------------
   const typing = () => ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.querySelector('dialog[open]');
+  // Ctrl+S and Ctrl+O work everywhere (in a text field too), and never reach the browser's own.
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || !['s', 'o'].includes(e.key.toLowerCase())) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (document.querySelector('dialog[open]')) return;
+    if (e.key.toLowerCase() === 's') quickSave(); else app.files.open();
+  }, true);
   window.addEventListener('keydown', (e) => {
     if (typing()) return;
     const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
     const ARROWS = { arrowleft: [-1, 0], arrowright: [1, 0], arrowup: [0, -1], arrowdown: [0, 1] };
     if (mod) {
-      const act = { z: e.shiftKey ? app.redo : app.undo, y: app.redo, c: () => copySelection(false), x: () => copySelection(true),
-        v: startPaste, d: duplicate, a: selectAll }[k];
+      const act = { z: e.shiftKey ? app.redo : app.undo, y: app.redo, c: () => editCmd('copy'), x: () => editCmd('cut'),
+        v: () => editCmd('paste'), d: () => editCmd('dup'), a: () => editCmd('all') }[k];
       if (act) { e.preventDefault(); act(); }
       return;
     }
-    if (ARROWS[k] && app.sel) { e.preventDefault(); const [dx, dy] = ARROWS[k], n = e.shiftKey ? 5 : 1; nudge(dx * n, dy * n); return; }
-    if (e.key === 'Tab') { e.preventDefault(); toggleLayer(); }
-    else if (e.key === ' ') { e.preventDefault(); spaceDown = true; setCursor(app.hover); }
+    if (e.key === '?') { $('#help-dlg').showModal(); return; }
+    if (k === '.') { app.host.setRunning(false); app.host.step(); updateClock(); return; }
+    if (ARROWS[k] && app.sel && app.sel.blocks.size) { e.preventDefault(); const [dx, dy] = ARROWS[k], n = e.shiftKey ? 5 : 1; nudge(dx * n, dy * n); return; }
+    if (e.key === ' ') { e.preventDefault(); spaceDown = true; setCursor(app.hover); }
     else if (e.key === 'Escape') {
       if (app.route) endRoute();
       else if (app.pasting) { app.pasting = null; updateToolbar(); }
@@ -615,20 +797,21 @@
     else if (e.key === 'Enter' && app.route) endRoute();
     else if (e.key === '/' && app.route) { app.route.hFirst = !app.route.hFirst; if (app.hover) routePreview(app.hover); }
     else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(e.shiftKey); }
-    else if (e.key === '?') $('#help-dlg').showModal();
     else if (k === 'v') setTool('select');
-    else if (k === 'w' || k === 'x') setTool('route');
-    else if (k === 'e') setTool('erase');
-    else if (k === 'k') setTool('knob');
+    else if (k === 'w') setTool('route');
     else if (k === 'r') rotate();
     else if (k === 'z') zoomOut();
     else if (k === 'f' && app.sel) zoomToSelection();
     else if (k === 'h' || e.key === 'Home') app.view.fitAll();
-    else if (k === '.') { app.host.setRunning(false); app.host.step(); updateClock(); }
   });
   window.addEventListener('keyup', (e) => { if (e.key === ' ') { spaceDown = false; setCursor(app.hover); } });
+  // Edit commands go to whichever view is showing.
+  function editCmd(cmd) {
+    ({ copy: () => copySelection(false), cut: () => copySelection(true), paste: startPaste, dup: duplicate,
+      delete: () => deleteSelection(false), all: selectAll })[cmd]();
+  }
   function zoomToSelection() {
-    const s = app.sel, bb = s && E.bounds(s.F, app.project.defs, s);
+    const s = app.sel, bb = s && E.bounds(s.F, app.project.defs, s, routesOf(s.F));
     if (!bb) return;
     const F = s.F;
     app.view.fitRect(F.ox + bb.x0 * F.sc, F.oy + bb.y0 * F.sc, F.ox + (bb.x1 + 1) * F.sc, F.oy + (bb.y1 + 1) * F.sc, 0.2);
@@ -638,25 +821,23 @@
   function setTool(t) { app.tool = t; app.placing = null; app.pasting = null; app.route = null; updateToolbar(); updatePalette(); app.view.dirty = true; }
   function updateToolbar() {
     document.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === app.tool && !app.placing && !app.pasting));
-    $('#btn-layer').textContent = app.layer === G.TOP ? 'Top' : 'Bottom';
-    $('#btn-layer').classList.toggle('bot', app.layer === G.BOT);
     const h = app.history;
     $('#btn-undo').disabled = !h.canUndo; $('#btn-undo').title = h.canUndo ? `Undo ${h.undoLabel} (Ctrl+Z)` : 'Nothing to undo';
     $('#btn-redo').disabled = !h.canRedo; $('#btn-redo').title = h.canRedo ? `Redo ${h.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo';
     const has = !!app.sel && !E.isEmpty(app.sel);
-    for (const id of ['#btn-copy', '#btn-cut', '#btn-dup', '#btn-del']) $(id).disabled = !has;
+    for (const id of ['#btn-copy', '#btn-cut', '#btn-dup']) $(id).disabled = !has;
+    $('#btn-del').disabled = !has;
     setCursor(app.hover);
     updateStatus();
   }
   document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
-  $('#btn-layer').addEventListener('click', toggleLayer);
   $('#btn-undo').addEventListener('click', () => app.undo());
   $('#btn-redo').addEventListener('click', () => app.redo());
-  $('#btn-copy').addEventListener('click', () => copySelection(false));
-  $('#btn-cut').addEventListener('click', () => copySelection(true));
-  $('#btn-paste').addEventListener('click', startPaste);
-  $('#btn-dup').addEventListener('click', duplicate);
-  $('#btn-del').addEventListener('click', () => deleteSelection(false));
+  $('#btn-copy').addEventListener('click', () => editCmd('copy'));
+  $('#btn-cut').addEventListener('click', () => editCmd('cut'));
+  $('#btn-paste').addEventListener('click', () => editCmd('paste'));
+  $('#btn-dup').addEventListener('click', () => editCmd('dup'));
+  $('#btn-del').addEventListener('click', () => editCmd('delete'));
 
   // The single clock slider: log scale from 0.5 Hz up to real time.
   const rateFrom = (x) => (x >= 0.999 ? RATE_MAX : RATE_MIN * Math.pow(RATE_MAX / RATE_MIN, x));
@@ -673,7 +854,7 @@
     $('#rate-label').title = rateLabel(h.rate);
     $('#btn-run').textContent = h.running ? '⏸' : '▶';
     $('#btn-run').title = h.running ? 'Pause the clock' : 'Run the clock';
-    $('#btn-audio').textContent = h.audioOn ? '■ DAC on' : '▶ Start audio';
+    $('#btn-audio').textContent = h.audioOn ? '■ Sound on' : '▶ Start audio';
     $('#btn-audio').classList.toggle('on', h.audioOn);
   }
   $('#rate').addEventListener('input', (e) => { app.host.setRate(rateFrom(Number(e.target.value))); updateClock(); });
@@ -696,18 +877,31 @@
       const on = app.placing && app.placing.type === (kind === 'def' ? 'comp' : type) && (kind !== 'def' || app.placing.def === type);
       return `<div class="pitem${on ? ' on' : ''}" data-place="${kind}:${esc(type)}" title="${esc(tip)}"><span class="psym">${esc(sym)}</span><span>${esc(title)}</span></div>`;
     };
-    let s = '<h3>Atoms</h3>';
-    for (const t of G.ATOM_ORDER) s += item('atom', t, G.ATOMS[t].sym, G.ATOMS[t].title, G.ATOMS[t].eq + '\n' + G.DOCS[t]);
-    s += '<h3>Sources</h3>';
-    for (const t of G.SOURCE_ORDER) s += item('atom', t, G.SOURCES[t].sym, G.SOURCES[t].title, G.SOURCES[t].eq + '\n' + G.DOCS[t]);
-    s += '<h3>Outputs</h3>';
-    for (const t of G.SINK_ORDER) s += item('atom', t, G.SINKS[t].sym, G.SINKS[t].title, G.DOCS[t]);
+    const typeItem = (t) => { const i = G.info(t); return item('atom', t, i.sym, i.title, (i.eq && i.eq !== i.title ? i.eq + '\n' : '') + (G.DOCS[t] || '')); };
+    let s = '<h3 class="dom-float">Float</h3>';
+    for (const t of G.ATOM_ORDER.concat(G.SOURCE_ORDER)) s += typeItem(t);
+    s += '<h3 class="dom-fixed">Fixed point</h3>';
+    for (const t of G.GATE_ORDER.concat(['bits'])) s += typeItem(t);
+    s += '<h3 class="dom-analog">Analog</h3>';
+    for (const t of G.Analog.BOARD_ORDER.concat(['volts'])) s += typeItem(t);
+    // a block crosses domains when its ports are of more than one kind: a converter
+    const crossing = (n) => new Set(app.project.defs[n].ports.map((p) => p.domain || 'float')).size > 1;
+    s += '<h3>Converters</h3>';
+    for (const t of G.Analog.CONVERTER_ORDER) s += typeItem(t);
+    s += '<h3>Sockets</h3>';
+    for (const t of G.IO_ORDER) s += typeItem(t);
     s += '<h3>Library</h3>';
-    for (const n of Object.keys(app.project.defs).sort()) s += item('def', n, '▣', n, app.project.defs[n].description || '');
+    const st = blockStatus();
+    for (const n of Object.keys(app.project.defs).sort().filter(crossing)) {
+      s = s.replace('<h3>Sockets</h3>', item('def', n, '⇄', n, app.project.defs[n].description || '') + '<h3>Sockets</h3>');
+    }
+    for (const n of Object.keys(app.project.defs).sort().filter((x) => !crossing(x))) {
+      s += item('def', n, st[n] ? '▣•' : '▣', n, (st[n] ? `(${STATUS_WORD[st[n]]}: Save… puts it in the library)\n` : '') + (app.project.defs[n].description || ''));
+    }
     s += '<div class="pbuttons"><button id="btn-newdef">+ New block</button></div>';
-    s += '<p class="dim small">A constant is a net nobody writes. Route a short trace from an input pin, then give it a handle with the knob tool (K).</p>';
+    s += '<p class="dim small">Drag from a pin to a pin to wire them: float pins with traces, fixed-point pins with barcodes, analog jacks with cables. Different kinds only meet through a converter.</p>';
     // drop headings whose section is empty after filtering
-    s = s.replace(/<h3>[^<]*<\/h3>(?=<h3>|<div class="pbuttons">)/g, '');
+    s = s.replace(/<h3[^>]*>[^<]*<\/h3>(?=<h3|<div class="pbuttons">)/g, '');
     $('#palette-list').innerHTML = s;
   }
   $('#palette-search').addEventListener('input', (e) => { paletteFilter = e.target.value; updatePalette(); });
@@ -726,102 +920,170 @@
     updatePalette(); updateToolbar();
     toast('Click to place, R to rotate, Shift-click to place several, Esc to cancel.');
   });
-  function newDefinition() {
-    const name = prompt('Name for the new block', 'MyBlock');
-    if (!name) return;
-    if (app.project.defs[name]) { toast(`"${name}" already exists.`); return; }
-    app.project.defs[name] = G.makeDef(name, 4, 3, 8, [{ dir: 'in', row: 1, name: 'in' }, { dir: 'out', row: 1, name: 'out' }], '');
-    app.placing = { type: 'comp', def: name };
-    app.changed(); app.commit('new block ' + name); updatePalette(); updateToolbar();
-    toast(`Place your "${name}" somewhere, then zoom into it to build its insides.`);
+  // + New block: a new library block, made in Files and opened in the block editor.
+  async function newDefinition() {
+    if (!app.curator) { toast('New blocks are library files: serve the app with tools/serve.py to make them.', 6000); return; }
+    await app.files.open('library');
+    app.files.startEdit('new', 'library', null, 'NewBlock');
   }
 
   // ---- inspector -------------------------------------------------------------------
-  function renderInspector() {
+  // force: redraw even under a field being typed in (after a change to what the inspector shows)
+  function renderInspector(force) {
     const el = $('#inspector');
-    if (el.contains(document.activeElement) && document.activeElement !== document.body) return;
-    const one = selBlock(), reg = selRegion();
+    // don't redraw under a field being typed in (buttons, checkboxes and menus don't count)
+    const a = document.activeElement;
+    if (!force && el.contains(a) && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !['checkbox', 'button', 'range', 'color'].includes(a.type)))) return;
+    const one = selBlock(), net = selNet();
     if (one) el.innerHTML = blockHtml(one.F, one.b);
-    else if (reg) el.innerHTML = regionHtml(reg.F, reg.rid);
+    else if (net && app.sel.wires.size <= 1) el.innerHTML = netHtml(net.F, net.net);
     else if (app.sel && !E.isEmpty(app.sel)) el.innerHTML = multiHtml(app.sel);
     else el.innerHTML = reportHtml();
   }
   function multiHtml(sel) {
     const types = {};
     for (const b of sel.F.sheet.blocks) if (sel.blocks.has(b.id)) { const n = b.type === 'comp' ? b.def : G.info(b.type).title; types[n] = (types[n] || 0) + 1; }
-    const nets = new Set();
-    for (const c of sel.cells) { const [l, x, y] = E.unck(c), rid = sel.F.sheet[l][G.key(x, y)]; if (rid) nets.add(rid); }
-    let h = `<h2>${describe(sel)}</h2><p class="dim small">${where(sel.F)}${nets.size ? ` · traces from ${plural(nets.size, 'net')}` : ''}</p>`;
+    const nets = new Set(sel.F.sheet.wires.filter((w) => sel.wires.has(w.id)).map((w) => w.from));
+    let h = `<h2>${describe(sel)}</h2><p class="dim small">${where(sel.F)}${nets.size ? ` · wires of ${plural(nets.size, 'net')}` : ''}</p>`;
     if (Object.keys(types).length) h += '<table class="res">' + Object.entries(types).sort().map(([n, c]) => `<tr><td>${esc(n)}</td><td>${c}</td></tr>`).join('') + '</table>';
     h += `<p class="btnrow"><button data-act="copy">Copy</button> <button data-act="cut">Cut</button> <button data-act="dup">Duplicate</button> <button data-act="delete" class="danger">Delete</button></p>
-      <p class="dim small">Drag any selected item to move them all, or use the arrow keys (Shift: 5 cells). Shift-click adds or removes items; F zooms to the selection.</p>`;
+      <p class="dim small">Drag a selected block to move them all (their wires follow), or use the arrow keys (Shift: 5 cells). Shift-click adds or removes items; F zooms to the selection. Copy takes the blocks and the wires between them.</p>`;
     return h;
   }
   const field = (label, prop, value, type, extra) =>
     `<label class="field"><span>${label}</span><input data-prop="${prop}" type="${type || 'text'}" value="${esc(value === undefined ? '' : value)}" ${extra || ''}></label>`;
   const where = (F) => (F.chain.length ? 'inside ' + F.chain.join(' › ') : 'root');
 
+  // The block editor: a library block open on its workbench (its one instance on an empty board).
+  const benchDef = () => {
+    const c = app.curated, bs = app.project.root.blocks;
+    return c && c.kind === 'block' && bs.length === 1 && bs[0].type === 'comp' && bs[0].def === c.name && app.project.defs[c.name] ? c.name : null;
+  };
+  function sizeHtml(def) {
+    const n = G.inner(def);
+    return `<h3>Size</h3><table class="ports size">
+      <tr><td>Block</td><td><input data-prop="size.fw" type="number" min="1" max="40" value="${def.fw}"></td><td>×</td><td><input data-prop="size.fh" type="number" min="1" max="40" value="${def.fh}"></td><td class="dim small">cells</td></tr>
+      <tr><td>Inside</td><td><input data-prop="size.iw" type="number" min="1" max="400" value="${n.w}"></td><td>×</td><td><input data-prop="size.ih" type="number" min="1" max="400" value="${n.h}"></td><td class="dim small">fine cells</td></tr></table>
+      <p class="dim small">The block's size on the boards it sits on (an Add is 3×3), and the size of its own board inside. They are separate: the inside keeps its layout and is drawn scaled to fit. Every design using this block sees the new size.</p>`;
+  }
+  // The block editor: everything about the block itself, with or without a selection.
+  function definitionHtml(name) {
+    const def = app.project.defs[name];
+    let h = `<h2>Block ${esc(name)}</h2><p class="dim small">The block editor. Ctrl+S saves it to the library; every design that uses it gets this version. Rename it from Files….</p>`;
+    h += `<label class="field col"><span>Description</span><textarea data-prop="def.description" rows="3">${esc(def.description || '')}</textarea></label>`;
+    h += sizeHtml(def);
+    h += portGridHtml(def);
+    const ins = def.ports.map((p, i) => [p, i]).filter(([p]) => p.dir === 'in');
+    if (ins.length) {
+      h += '<h3>Input defaults</h3><p class="dim small">What an input reads inside the block when nothing outside is wired to it, like a normalled jack. A knob shows it on the block\'s own board.</p><table class="ports">';
+      for (const [p, i] of ins) {
+        h += `<tr><td>${esc(p.name)}</td><td><input data-prop="pdef.${i}.value" type="number" step="any" value="${esc(p.value || 0)}"></td>
+          <td><label class="small"><input type="checkbox" data-prop="pdef.${i}.knob" ${p.knob ? 'checked' : ''}> knob</label></td></tr>`;
+      }
+      h += '</table>';
+    }
+    return h;
+  }
+  // The ports: a column of inputs and one of outputs, a row for every row of the
+  // block. Each port can be renamed, given a kind of signal, removed, or dragged
+  // (or moved with ↑ ↓) to another row; an empty row has a + to add one there.
+  function portGridHtml(def) {
+    const at = (dir, r) => def.ports.findIndex((p) => p.dir === dir && p.row === r);
+    let h = `<h3>Ports</h3><table class="portgrid"><thead><tr><th></th><th>Inputs</th><th>Outputs</th></tr></thead><tbody>`;
+    for (let r = 0; r < def.fh; r++) {
+      h += `<tr><td class="rownum">${r}</td>`;
+      for (const dir of ['in', 'out']) {
+        const i = at(dir, r);
+        h += `<td data-cell="${dir}:${r}">`;
+        if (i < 0) h += `<button class="mini addhere" data-act="addport" data-dir="${dir}" data-row="${r}" title="Add an ${dir === 'in' ? 'input' : 'output'} on row ${r}">+</button>`;
+        else {
+          const p = def.ports[i], dom = p.domain || 'float';
+          h += `<div class="port dom-${dom}" draggable="true" data-port="${i}" title="Drag to another row">
+            <div class="prow"><span class="grip">⋮⋮</span><input data-prop="port.${i}.name" value="${esc(p.name)}" aria-label="name"><button class="mini" data-act="delport" data-i="${i}" title="Remove this port (and its wires)">×</button></div>
+            <div class="prow"><select data-prop="port.${i}.domain" aria-label="kind of signal">${G.DOMAINS.map((d) => `<option ${d === dom ? 'selected' : ''}>${d}</option>`).join('')}</select>
+            <button class="mini" data-act="portmove" data-i="${i}" data-by="-1" ${r ? '' : 'disabled'} title="Up a row">↑</button><button class="mini" data-act="portmove" data-i="${i}" data-by="1" ${r < def.fh - 1 ? '' : 'disabled'} title="Down a row">↓</button></div></div>`;
+        }
+        h += '</td>';
+      }
+      h += '</tr>';
+    }
+    h += '</tbody></table><p class="dim small">A row for every row of the block (make it taller under Size for more). Drag a port to another row, or onto another port to swap them; its wires go with it. Inside, each port is a pad on the edge of the board, to wire to.</p>';
+    return h;
+  }
+  // Move a port of the block being edited to another row of its side, swapping with one already there.
+  function movePort(i, row) {
+    const name = benchDef(), def = name && app.project.defs[name], p = def && def.ports[i];
+    if (!p || row < 0 || row >= def.fh || row === p.row) return;
+    E.portChange(app.project, name, () => {
+      const q = def.ports.find((x) => x !== p && x.dir === p.dir && x.row === row);
+      if (q) q.row = p.row;
+      p.row = row;
+    });
+    app.version++; app.changed(); app.commit('move port'); renderInspector(true);
+  }
+  // A composite block in a design: what it is, and its size here. The block itself is edited in the block editor.
+  function compHtml(F, b) {
+    const def = app.project.defs[b.def];
+    let h = `<h2>${esc(b.def)} <span class="dim">${b.id}</span></h2><p class="dim small">${where(F)}</p>`;
+    h += `<p>${esc(def ? def.description || 'Composite block.' : 'Missing definition!')}</p>`;
+    h += '<p class="btnrow"><button data-act="zoom">Zoom in ⤵</button> <button data-act="editblock">Edit block…</button></p>';
+    if (def) {
+      const fp = G.footprint(b, app.project.defs), own = b.w || b.h;
+      h += `<h3>Size here</h3><table class="ports size">
+        <tr><td>Width</td><td><input data-prop="isize.w" type="number" min="1" max="40" value="${fp.w}"></td><td>Height</td><td><input data-prop="isize.h" type="number" min="1" max="40" value="${fp.h}"></td></tr></table>
+        <p class="dim small">How big this copy is on this board (the block's own size is ${def.fw}×${def.fh}${own ? ` <button class="mini" data-act="isizereset">back to ${def.fw}×${def.fh}</button>` : ''}). Only the drawing changes: its inside is shown scaled to fit, and its pins spread over its height. Its ports, defaults and inside are edited in the block editor (Edit block…).</p>`;
+    }
+    const alts = def ? swappable(F, b) : [];
+    if (alts.length) {
+      const n = F.sheet.blocks.filter((x) => x.type === 'comp' && x.def === b.def).length;
+      h += `<h3>Swap chip</h3><p class="dim small">Blocks with the same pins fit the same socket.</p>
+        <label class="field"><span>Replace with</span><select data-prop="swap"><option value="">choose…</option>${alts.map((a) => `<option>${esc(a)}</option>`).join('')}</select></label>`;
+      if (n > 1) h += `<label class="field"><span>All ${n} here</span><input type="checkbox" data-prop="swapall" checked></label>`;
+    }
+    return h + '<p><button data-act="delete" class="danger">Delete</button></p>';
+  }
   function blockHtml(F, b) {
     if (b.type === 'comp') {
-      const def = app.project.defs[b.def];
-      let h = `<h2>${esc(b.def)} <span class="dim">${b.id}</span></h2><p class="dim small">${where(F)}</p>`;
-      h += `<p>${esc(def ? def.description || 'Composite block.' : 'Missing definition!')}</p>`;
-      h += '<p><button data-act="zoom">Zoom in ⤵</button></p>';
-      const alts = def ? swappable(F, b) : [];
-      if (alts.length) {
-        const n = F.sheet.blocks.filter((x) => x.type === 'comp' && x.def === b.def).length;
-        h += `<h3>Swap chip</h3><p class="dim small">Chips with the same footprint and pins fit the same socket.</p>
-          <label class="field"><span>Replace with</span><select data-prop="swap"><option value="">choose…</option>${alts.map((a) => `<option>${esc(a)}</option>`).join('')}</select></label>`;
-        if (n > 1) h += `<label class="field"><span>All ${n} here</span><input type="checkbox" data-prop="swapall" checked></label>`;
-      }
-      if (def) {
-        h += `<h3>Definition (shared by ${instances(b.def)})</h3>`;
-        h += `<p class="dim small">Footprint ${def.fw}×${def.fh} cells; inside is ${def.s}× finer (${def.fw * def.s}×${def.fh * def.s}).</p>`;
-        h += `<label class="field col"><span>Description</span><textarea data-prop="def.description" rows="3">${esc(def.description || '')}</textarea></label>`;
-        h += '<h3>Ports</h3><table class="ports">';
-        def.ports.forEach((p, i) => {
-          h += `<tr><td>${p.dir}</td><td><input data-prop="port.${i}.name" value="${esc(p.name)}"></td>
-            <td><input data-prop="port.${i}.row" type="number" min="0" max="${def.fh - 1}" value="${p.row}"></td>
-            <td><button class="mini" data-act="delport" data-i="${i}">×</button></td></tr>`;
-        });
-        h += '</table><p><button data-act="addin">+ input</button> <button data-act="addout">+ output</button></p>';
-        h += '<p class="dim small">Inputs sit on the left column and outputs on the right, at the given row. Inside, each port is a pad on the edge at the same place.</p>';
-      }
-      return h + '<p><button data-act="delete" class="danger">Delete</button></p>';
+      // on its workbench, the block is the block editor
+      if (F.path === '' && benchDef() === b.def) return definitionHtml(b.def);
+      return compHtml(F, b);
     } else {
       const t = G.info(b.type);
       let h0 = `<h2>${t.title} <span class="dim">${b.id}</span></h2><p class="dim small">${where(F)}</p>`;
       h0 += `<div class="eq">${esc(t.eq)}</div><p>${esc(G.DOCS[b.type])}</p>`;
       const code = app.compiled && app.compiled.nodeCode[F.path + b.id];
       if (code) h0 += `<h3>Compiled as</h3><pre class="code small">${esc(code)}</pre>`;
-      if (b.type === 'sample') h0 += sampleHtml(F, b);
-      if (b.type === 'scope') {
-        h0 += `<label class="field"><span>Ticks shown</span><select data-prop="window">${[16, 64, 256, 512, 2048, 4800, 16384, 48000]
-          .map((n) => `<option ${b.window === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
-      }
-      h0 += '<p class="dim small">R rotates.</p>';
+      if (b.type === 'const' || b.type === 'volts') h0 += constHtml(F, b);
+      if (b.type === 'bits') h0 += bitsHtml(F, b);
+      if (b.type === 'table') h0 += tableHtml(F, b);
+      if (b.type === 'split' || b.type === 'join') h0 += field('Fields (bits, low first)', 'parts', G.partsOf(b).join(','), 'text');
+      if (b.type === 'in' || b.type === 'out') h0 += socketHtml(F, b);
+      if (G.MODULES[b.type]) h0 += moduleParamsHtml(F, b);
+      if (G.ATOMS[b.type] || G.GATES[b.type]) h0 += '<p class="dim small">R rotates.</p>';
       return h0 + '<p><button data-act="delete" class="danger">Delete</button></p>';
     }
   }
 
-  function sampleHtml(F, b) {
-    const e = b.sample && GW.Samples.get(b.sample);
-    let h = '<h3>Song</h3>';
-    if (!b.sample) h += '<p>No WAV loaded yet; it emits 0.</p>';
-    else if (e) {
-      const pl = app.running && app.running.players.find((x) => x.path === F.path + b.id);
-      const at = pl && app.snap && app.snap.v ? app.snap.v[pl.v] || 0 : 0;
-      h += `<p><b>${esc(e.name)}</b></p><table class="res">
-        <tr><td>Samples in the stack</td><td>${e.data.length.toLocaleString('en-US')}</td></tr>
-        <tr><td>Length at real time</td><td>${fmtTime(e.data.length / G.FS)}</td></tr>
-        <tr><td>Read position</td><td data-live="pos">${Math.round(at).toLocaleString('en-US')}</td></tr></table>`;
-    } else if (app.missing.has(b.sample)) h += `<p class="err small">"${esc(b.name || b.sample)}" is not stored in this browser. Load the WAV again.</p>`;
-    else h += '<p class="dim">Loading…</p>';
-    h += `<label class="field"><span>At the end</span><select data-prop="loop"><option value="1" ${b.loop !== false ? 'selected' : ''}>loop</option><option value="0" ${b.loop === false ? 'selected' : ''}>stop (emit 0)</option></select></label>`;
-    h += '<p><button data-act="wav">Load WAV…</button></p>';
-    h += '<p class="dim small">The file is mixed to mono and resampled to 48 kHz, so at real time one tick is one sample. Its read position is a counter that moves on at every clock edge, with the flip-flops; Reset rewinds it. Songs are kept in this browser (IndexedDB), not in exported files.</p>';
+  // Knobs of an analog module or utility placed on the board.
+  function moduleParam(F, b, id) {
+    const p = G.MODULES[b.type].params.find((q) => q.id === id), ov = app.project.values[F.path + b.id + '#' + id];
+    return F.path && ov !== undefined ? ov : b.params && b.params[id] !== undefined ? b.params[id] : p.def;
+  }
+  function moduleParamsHtml(F, b) {
+    const m = G.MODULES[b.type];
+    let h = '';
+    if (m.kind === 'analog') h += '<p class="small">An analog circuit, sampled by the clock: its outputs change at the clock edge, one tick after its inputs, so it can close a feedback loop on its own.</p>';
+    if (!m.params.length) return h;
+    h += '<h3>Knobs</h3>';
+    for (const p of m.params) {
+      const v = moduleParam(F, b, p.id);
+      h += `<label class="field"><span>${esc(p.label)}</span><input type="number" step="any" data-prop="mparam.${esc(p.id)}" value="${+Number(v).toPrecision(6)}"></label>
+        <div class="dim small knobval">${esc(G.Analog.showParam(p, v))}${p.unit && !p.show ? '' : ''} · ${p.min} … ${p.max}</div>`;
+    }
+    if (F.path) h += '<p class="dim small">Settings here belong to this instance only.</p>';
     return h;
   }
+
 
   // Definitions that fit the same socket: same footprint, same pins.
   function signature(def) { return JSON.stringify([def.fw, def.fh, def.ports.map((p) => p.dir + p.row).sort()]); }
@@ -843,56 +1105,113 @@
     toast(`Swapped ${all ? 'every ' + old : old} for ${name}.`);
   }
 
-  function regionHtml(F, rid) {
-    const reg = F.sheet.regions[rid], key = F.path + rid;
-    const cells = G.cellsOf(F.sheet, rid);
-    const vias = cells.filter(([l, x, y]) => l === G.TOP && F.sheet.bot[G.key(x, y)] === rid).length;
-    const w = written(key), st = app.knobState(key), v = app.valueOf(key);
-    let h = `<h2>Net ${rid}</h2><p class="dim small">${where(F)} · ${cells.length} cells${vias ? `, ${vias} via${vias > 1 ? 's' : ''}` : ''} · a register</p>`;
-    h += `<div class="eq">${esc(GW.fmt(v) || '—')}</div>`;
-    if (w) {
-      h += '<p>Written by a block on every tick.</p>';
-    } else {
-      h += '<p>Nobody writes this register, so it is a constant.</p>';
-      if (st === 'overridden') h += '<p class="dim">Its value is set by a register outside this block.</p>';
-      else h += field(F.path ? 'Value (this instance)' : 'Value', 'value', regionValue(F, rid), 'number', 'step="any"');
-      if (F.path && st !== 'overridden') h += `<p class="dim small">Default for new instances: ${GW.fmt(reg.value)} <button class="mini" data-act="default">make this the default</button></p>`;
-    }
-    if (reg.knob) {
-      const k = reg.knob;
-      h += '<h3>Handle</h3>';
-      if (st !== 'ok') h += `<p class="err small">${st === 'written' ? 'Dead: the register is written by a block.' : 'Overridden from outside.'}</p>`;
-      h += field('Label', 'knob.label', k.label);
-      h += field('Min', 'knob.min', k.min, 'number', 'step="any"');
-      h += field('Max', 'knob.max', k.max, 'number', 'step="any"');
-      h += `<label class="field"><span>Scale</span><select data-prop="knob.scale">${['lin', 'log'].map((x) => `<option ${k.scale === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>`;
-      h += '<p><button data-act="rmknob">Remove handle</button></p>';
-    } else if (!w) h += '<p class="dim small">Use the knob tool (K) on one of its cells to give it a handle.</p>';
-    if (app.sel && app.sel.cells.size) h += `<p class="dim small">Selected: ${plural(app.sel.cells.size, 'trace cell')}, shown white. Delete removes them; Shift+Delete removes the whole net. Drag to move them.</p>`;
-    h += '<p><button data-act="delete" class="danger">Delete track</button> <button data-act="deletenet" class="danger">Delete net</button></p>';
+  // Bits: a fixed-point word, edited bit by bit (high bits first, as written) or as a number.
+  function bitsHtml(F, b) {
+    const t = { F, b }, w = Math.max(1, Math.min(32, b.width || 8)), v = GW.word(knobValue(t), w);
+    let h = field('Width (bits)', 'bits.width', w, 'number', 'min="1" max="32" step="1"');
+    h += field(direct(F) ? 'Value' : 'Value (this instance)', 'bits.value', v, 'number', 'step="1"');
+    h += '<div class="bitrow">';
+    for (let i = w - 1; i >= 0; i--) h += `<label class="bit" title="bit ${i}"><input type="checkbox" data-prop="bits.bit.${i}" ${Math.floor(v / Math.pow(2, i)) % 2 ? 'checked' : ''}><span>${i}</span></label>`;
+    h += `</div><p class="dim small">0x${v.toString(16).toUpperCase()} · as signed ${v >= Math.pow(2, w - 1) ? v - Math.pow(2, w) : v}. Inside a block it is a default that a wire from outside overrides.</p>`;
+    return h;
+  }
+  // A Table: its points, one "x y" per line.
+  function tableHtml(F, b) {
+    const pts = G.tablePoints(b);
+    return `<h3>Points</h3><label class="field col"><span class="dim small">x y, one point a line; straight lines between them, flat beyond the ends</span>
+      <textarea data-prop="table.points" rows="${Math.min(14, pts.length + 2)}" class="mono">${esc(pts.map((q) => q.join(' ')).join('\n'))}</textarea></label>
+      <p class="dim small">A ROM, or a law: a converter's curve, a scale, a waveshaper. ${pts.length} points from x = ${GW.fmt(pts[0][0])} to ${GW.fmt(pts[pts.length - 1][0])}.</p>`;
+  }
+  // An In or Out socket: its name, which is the port's name in PipeWire.
+  function socketHtml(F, b) {
+    const c = app.running, list = c ? (b.type === 'out' ? c.outs : c.ins) : [], i = list.findIndex((x) => x.path === F.path + b.id);
+    let h = field('Name', 'sock.name', b.name || b.type, 'text');
+    if (b.type === 'out') h += `<p class="small">${i < 0 ? 'Not an output yet.' : `Output ${i + 1} of ${list.length}` + (i === 0 ? (list.length === 1 ? ': both speakers.' : ': the left speaker.') : i === 1 ? ': the right speaker.' : ': not on the speakers (PipeWire only).')}</p>`;
+    else h += `<p class="small">${i < 0 ? '' : `Input ${i + 1} of ${list.length}: microphone channel ${i + 1} in the browser.`}</p>`;
+    const br = app.bridge;
+    if (br && br.connected) {
+      const mine = br.selfPort(b.type, b.name || b.type);
+      const ends = mine ? br.graph.links.filter((l) => (b.type === 'out' ? l.out : l.in) === mine.id).map((l) => ({ l, p: br.portOf(b.type === 'out' ? l.in : l.out) })) : [];
+      const name = (p) => { const n = p && br.nodeOf(p.node); return n ? `${n.desc || n.name}: ${p.name}` : '?'; };
+      h += `<h3>PipeWire</h3><p class="small">${mine ? `Port "${esc(mine.name)}" of this design's node.` : 'Waiting for the bridge to make its port…'}</p>`;
+      if (ends.length) h += '<ul class="small">' + ends.map(({ l, p }) => `<li>${b.type === 'out' ? '→' : '←'} ${esc(name(p))} <button class="mini" data-act="unlink" data-id="${l.id}">×</button></li>`).join('') + '</ul>';
+      const cands = br.graph.ports.filter((p) => p.node !== br.graph.self && p.dir === (b.type === 'out' ? 'in' : 'out') && !p.monitor);
+      if (mine && cands.length) h += `<label class="field"><span>Link to</span><select data-prop="pwlink"><option value="">choose…</option>${cands.map((p) => `<option value="${p.id}">${esc(name(p))}</option>`).join('')}</select></label>`;
+    } else h += '<p class="dim small">With the PipeWire bridge (run <code>python3 tools/pwbridge.py</code> as yourself, then press PipeWire), every socket is a port of a "Sample Factory" node in PipeWire, to be patched in Helvum or here.</p>';
+    return h;
+  }
+  // A Constant: its value, and its knob.
+  function knobFields(k, pre) {
+    let h = field('Label', pre + '.label', k.label);
+    h += field('Min', pre + '.min', k.min, 'number', 'step="any"');
+    h += field('Max', pre + '.max', k.max, 'number', 'step="any"');
+    h += `<label class="field"><span>Scale</span><select data-prop="${pre}.scale">${['lin', 'log'].map((x) => `<option ${k.scale === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>`;
+    return h;
+  }
+  function constHtml(F, b) {
+    const t = { F, b }, st = app.knobState(knobKey(t));
+    let h = b.type === 'volts' ? '<p class="small">An analog constant: a voltage.</p>' : '';
+    if (st === 'written') h += '<p class="err small">Its net is driven by a block, so this constant is ignored.</p>';
+    else if (st === 'overridden') h += '<p class="dim small">A wire or constant outside this block sets this net; this one is the default.</p>';
+    h += field(direct(F) ? 'Value' : 'Value (this instance)', 'const.value', knobValue(t), 'number', 'step="any"');
+    if (!direct(F)) h += `<p class="dim small">Default: ${GW.fmt(b.value || 0)} <button class="mini" data-act="default">make this the default</button></p>`;
+    h += `<label class="field"><span>Knob</span><input type="checkbox" data-prop="const.knob" ${b.knob ? 'checked' : ''}></label>`;
+    if (b.knob) h += knobFields(b.knob, 'cknob');
+    h += '<p class="dim small">Drag from its pin to wire it to any number of inputs. Drag the knob to turn it; double-click to type a value.</p>';
+    return h;
+  }
+  // A net: one source and the wires from it.
+  function netHtml(F, net) {
+    const ws = F.sheet.wires.filter((w) => w.from === net), key = F.path + net, ref = app.compiled && app.compiled.netOf[key];
+    let h = `<h2>Net</h2><p class="dim small">${where(F)} · from ${esc(pinName(F, net))}</p>`;
+    h += `<div class="eq">${esc(GW.fmt(app.valueOf(key)) || '—')}</div>`;
+    h += `<p class="small">${ref && ref.k === 's' ? 'A register: it changes at the clock edge.' : ref && ref.k === 'p' ? 'A constant.' : 'Logic: it settles within the tick.'}</p>`;
+    h += `<h3>${plural(ws.length, 'wire')}</h3><ul class="small">` + ws.map((w) => `<li>${app.sel && app.sel.wires.has(w.id) ? '<b>' : ''}→ ${esc(pinName(F, w.to))}${app.sel && app.sel.wires.has(w.id) ? '</b>' : ''}</li>`).join('') + '</ul>';
+    const dom = G.domainAt(F.sheet, app.project.defs, net) || 'float';
+    const w0 = ws.find((w) => app.sel && app.sel.wires.has(w.id)) || ws[0], st = (w0 && w0.style) || {};
+    if (dom === 'fixed') { const wd = app.compiled && app.compiled.widths[key]; h += `<p class="small">A fixed-point bus of ${wd || '?'} bit${wd === 1 ? '' : 's'}: a barcode, white for 1 and black for 0, the low bit on the left of the way it flows.</p>`; }
+    h += '<h3>Look</h3>';
+    const color = st.color || (dom === 'analog' ? G.CABLE_COLORS[0] : '#000000');
+    h += `<label class="field"><span>Colour</span><input type="color" data-prop="style.color" value="${esc(/^#[0-9a-f]{6}$/i.test(color) ? color : '#000000')}"> ${st.color ? '<button class="mini" data-act="nocolor">none</button>' : ''}</label>`;
+    if (dom === 'float') {
+      h += `<label class="field"><span>Trace width</span><input type="range" min="0.4" max="3" step="0.1" data-prop="style.width" value="${st.width || 1}"></label>`;
+      const vias = ws.reduce((n, w) => n + ((w.style && w.style.vias) || []).length, 0);
+      h += `<p class="dim small">Colour and width belong to the whole net (one copper trace). Double-click a trace to put a via there (the trace changes layer); double-click a via to remove it. ${vias ? `${plural(vias, 'via')} placed by hand. <button class="mini" data-act="novias">automatic vias</button>` : 'Until you place one, vias are drawn where traces cross.'}</p>`;
+    } else if (dom === 'analog') {
+      h += `<label class="field"><span>Droop</span><input type="range" min="0" max="3" step="0.05" data-prop="style.droop" value="${st.droop === undefined ? 1 : st.droop}"></label>`;
+      h += '<p class="dim small">A patch cable: it hangs between its jacks. Colour and droop are this cable\'s.</p>';
+    } else h += '<p class="dim small">The colour edges the barcode of the whole net.</p>';
+    const routed = dom !== 'analog';
+    h += `<p class="btnrow">${routed ? '<button data-act="reroute">Re-route</button> ' : ''}<button data-act="delete" class="danger">Delete wire</button> <button data-act="deletenet" class="danger">Delete net</button></p>`;
+    if (routed) h += '<p class="dim small">Drag the trace sideways to move that straight run; the wire stays connected. Re-route lets the router draw it again.</p>';
     return h;
   }
 
   function reportHtml() {
     const c = app.compiled;
     if (!c) return '';
-    let h = '<h2>Design</h2>';
+    const bench = benchDef();
+    let h = bench ? definitionHtml(bench) + '<h3>Inside</h3>' : '<h2>Design</h2>';
     if (c.errors.length) h += '<h3 class="err">Errors</h3><ul class="err">' + c.errors.map((e) => `<li>${esc(e.msg)}</li>`).join('') + '</ul><p class="dim small">The last error-free design keeps running.</p>';
     const r = c.resources;
     h += `<table class="res">
       <tr><td>Registers (flip-flop outputs)</td><td>${c.nRegs}</td></tr>
       <tr><td>Wires (settle within a tick)</td><td>${c.nNets - c.nRegs}</td></tr>
-      <tr><td>Sample stacks</td><td>${c.players.length}</td></tr>
       <tr><td>Constants</td><td>${c.params.length}</td></tr>
       <tr><td>Adders</td><td>${r.adder}</td></tr><tr><td>Multipliers</td><td>${r.multiplier}</td></tr>
       <tr><td>Comparators</td><td>${r.comparator}</td></tr><tr><td>Switches</td><td>${r.mux}</td></tr>
-      <tr><td>Flip-flops</td><td>${r.buffer}</td></tr></table>`;
+      <tr><td>Flip-flops</td><td>${r.buffer}</td></tr>
+      ${r.gate || r.dff ? `<tr><td>Gates</td><td>${r.gate}</td></tr><tr><td>D flip-flops</td><td>${r.dff}</td></tr>` : ''}
+      ${r.analog ? `<tr><td>Analog modules (sampled at the edge)</td><td>${r.analog}</td></tr>` : ''}
+      ${r.utility ? `<tr><td>Converters and utilities</td><td>${r.utility}</td></tr>` : ''}
+      <tr><td>Audio outputs / inputs</td><td>${c.outs.length} / ${c.ins.length}</td></tr></table>`;
     h += `<h3>Critical path: ${c.critDepth} operation${c.critDepth === 1 ? '' : 's'}</h3>
       <p class="dim small">The longest chain of logic between flip-flops. On real hardware all of it must settle within one clock period (${(1e6 / G.FS).toFixed(1)} µs here). Putting a flip-flop in the middle of the chain (pipelining) shortens it, at the cost of one tick of delay.</p>`;
     if (c.critical.length) h += `<ol class="crit small">${c.critical.map((x) => `<li>${esc(x.name)} <span class="dim">${esc(x.path)}</span></li>`).join('')}</ol>`;
     if (c.warnings.length) h += `<details><summary>${c.warnings.length} warning(s)</summary><ul>${c.warnings.map((w) => `<li>${esc(w.path)}: ${esc(w.msg)}</li>`).join('')}</ul></details>`;
-    h += `<h3>Colour = value</h3><div class="legend"><div class="bar neg"></div><div class="bar pos"></div></div>
-      <div class="legend-labels"><span>−10⁴</span><span>−1</span><span>0</span><span>1</span><span>10⁴</span></div>`;
+    h += `<h3>Float trace colour = value</h3><div class="legend"><div class="bar neg"></div><div class="bar pos"></div></div>
+      <div class="legend-labels"><span>−10⁴</span><span>−1</span><span>0</span><span>1</span><span>10⁴</span></div>
+      <p class="dim small">Fixed-point buses are barcodes (white 1, black 0); analog cables have their own colours, and output jacks a light for their voltage.</p>`;
     h += '<p><button data-act="code">Show compiled code</button></p>';
     return h;
   }
@@ -906,26 +1225,87 @@
     if (act === 'copy') return copySelection(false);
     if (act === 'cut') return copySelection(true);
     if (act === 'dup') return duplicate();
-    const one = selBlock(), reg = selRegion();
-    if (one) {
-      const s = one, b = one.b, def = b && app.project.defs[b.def];
-      if (act === 'zoom') zoomToBlock(s.F, b);
-      if (act === 'wav') pickWav(s.F, b);
-      if (def && (act === 'addin' || act === 'addout')) {
-        const dir = act === 'addin' ? 'in' : 'out';
-        const used = new Set(def.ports.filter((p) => p.dir === dir).map((p) => p.row));
-        let row = 0; while (used.has(row)) row++;
-        if (row >= def.fh) { toast('No free row on that side; make the block taller first.'); return; }
-        def.ports.push({ dir, row, name: dir + (def.ports.filter((p) => p.dir === dir).length + 1) });
-        app.changed(); app.commit('add port'); renderInspector();
+    if (act === 'unlink' && app.bridge) { app.bridge.unlink(Number(e.target.dataset.id)); return; }
+    const one = selBlock(), net = selNet();
+    const bench = benchDef(), bdef = bench && app.project.defs[bench];
+    if (bdef && (act === 'addport' || act === 'delport' || act === 'portmove')) {
+      if (act === 'addport') {
+        const dir = e.target.dataset.dir, row = Number(e.target.dataset.row), names = new Set(bdef.ports.map((p) => p.name));
+        let n = 1; while (names.has(dir + n)) n++;
+        E.portChange(app.project, bench, (d) => d.ports.push({ dir, row, name: dir + n }));
+        app.version++; app.changed(); app.commit('add port'); renderInspector(true);
+        const inp = $(`#inspector [data-cell="${dir}:${row}"] input`);
+        if (inp) { inp.focus(); inp.select(); }   // name it straight away
       }
-      if (def && act === 'delport') { def.ports.splice(Number(e.target.dataset.i), 1); app.changed(); app.commit('remove port'); renderInspector(); }
-    } else if (reg) {
-      const r = reg.F.sheet.regions[reg.rid];
-      if (act === 'rmknob') { delete r.knob; app.changed(); app.commit('remove handle'); renderInspector(); }
-      if (act === 'default') { r.value = regionValue(reg.F, reg.rid); delete app.project.values[reg.F.path + reg.rid]; app.changed(); app.commit('set default'); renderInspector(); }
+      if (act === 'portmove') movePort(Number(e.target.dataset.i), bdef.ports[Number(e.target.dataset.i)].row + Number(e.target.dataset.by));
+      if (act === 'delport') {
+        const n = E.portChange(app.project, bench, (d) => d.ports.splice(Number(e.target.dataset.i), 1));
+        if (n) toast(`Removed the port and the ${plural(n, 'wire')} to it.`, 2500);
+        app.version++; app.changed(); app.commit('remove port'); renderInspector(true);
+      }
+      return;
+    }
+    if (one) {
+      const s = one, b = one.b;
+      if (act === 'zoom') zoomToBlock(s.F, b);
+      if (act === 'editblock') editBlock(b.def);
+      if (act === 'isizereset') { E.resizeInstance(app.project, s.F, b, null, null); app.version++; app.changed(); app.commit('size of ' + b.def); renderInspector(); }
+      if (act === 'default' && b.type === 'const') { const t = { F: s.F, b }; b.value = knobValue(t); delete app.project.values[knobKey(t)]; app.changed(); app.commit('set default'); renderInspector(); }
+    } else if (net) {
+      const ws = net.F.sheet.wires.filter((w) => w.from === net.net), dom = G.domainAt(net.F.sheet, app.project.defs, net.net);
+      if (act === 'nocolor') { for (const w of dom === 'analog' ? ws.filter((w) => app.sel.wires.has(w.id)) : ws) if (w.style) delete w.style.color; styleDone(); }
+      if (act === 'novias') { for (const w of ws) if (w.style) delete w.style.vias; styleDone(); }
+      if (act === 'reroute') {
+        const ws = net.F.sheet.wires.filter((w) => w.from === net.net && (!app.sel.wires.size || app.sel.wires.has(w.id)));
+        for (const w of ws) delete w.path;
+        G.fixRoutes(net.F.sheet, app.project.defs);
+        app.version++; app.changed(); app.commit('re-route'); renderInspector();
+      }
     }
   });
+  function styleDone() {
+    for (const w of app.sel.F.sheet.wires) if (w.style && !Object.keys(w.style).length) delete w.style;
+    app.version++; app.changed(); app.commit('wire look'); renderInspector();
+  }
+  $('#inspector').addEventListener('input', (e) => {   // sliders show their effect while dragging
+    const prop = e.target.dataset && e.target.dataset.prop;
+    if (prop && prop.startsWith('style.') && e.target.type === 'range') { styleChange(prop.slice(6), e.target.value); app.version++; app.view.dirty = true; }
+  });
+  // A wire's look: on float and fixed nets the whole net shares it; a cable has its own.
+  function styleChange(k, v) {
+    const n = selNet();
+    if (!n) return;
+    const ws = n.F.sheet.wires.filter((w) => w.from === n.net), dom = G.domainAt(n.F.sheet, app.project.defs, n.net);
+    const targets = dom === 'analog' ? ws.filter((w) => app.sel.wires.has(w.id)) : ws;
+    for (const w of targets.length ? targets : ws) { w.style = w.style || {}; w.style[k] = k === 'color' ? v : Number(v); }
+  }
+  // dragging a port to another row of the grid
+  let portDrag = null;
+  $('#inspector').addEventListener('dragstart', (e) => {
+    const pe = e.target.closest && e.target.closest('.port[data-port]');
+    if (!pe) return;
+    portDrag = Number(pe.dataset.port);
+    e.dataTransfer.setData('text/plain', 'port ' + portDrag); e.dataTransfer.effectAllowed = 'move';
+  });
+  const dropCell = (e) => {
+    const td = e.target.closest && e.target.closest('td[data-cell]'), def = benchDef() && app.project.defs[benchDef()];
+    if (!td || portDrag === null || !def || !def.ports[portDrag]) return null;
+    const [dir, row] = td.dataset.cell.split(':');
+    return dir === def.ports[portDrag].dir ? { td, row: Number(row) } : null;
+  };
+  $('#inspector').addEventListener('dragover', (e) => {
+    const c = dropCell(e);
+    for (const t of document.querySelectorAll('#inspector td.drop')) t.classList.remove('drop');
+    if (c) { e.preventDefault(); c.td.classList.add('drop'); }
+  });
+  $('#inspector').addEventListener('drop', (e) => {
+    const c = dropCell(e);
+    if (!c) return;
+    e.preventDefault();
+    const i = portDrag; portDrag = null;
+    movePort(i, c.row);
+  });
+  $('#inspector').addEventListener('dragend', () => { portDrag = null; for (const t of document.querySelectorAll('#inspector td.drop')) t.classList.remove('drop'); });
   $('#inspector').addEventListener('change', (e) => {
     const prop = e.target.dataset && e.target.dataset.prop;
     if (!prop) return;
@@ -933,20 +1313,79 @@
     app.commit('edit ' + prop.split('.')[0]);
   });
   function inspectorChange(prop, v) {
-    const num = Number(v), one = selBlock(), reg = selRegion();
-    if (reg) {
-      const r = reg.F.sheet.regions[reg.rid];
-      if (prop === 'value' && Number.isFinite(num)) setRegionValue(reg.F, reg.rid, num);
-      else if (prop.startsWith('knob.')) {
-        const k = prop.slice(5);
-        r.knob[k] = k === 'min' || k === 'max' ? (Number.isFinite(num) ? num : r.knob[k]) : v;
+    const num = Number(v), one = selBlock();
+    if (prop.startsWith('isize.') && one && one.b.type === 'comp') {
+      const fp = G.footprint(one.b, app.project.defs), w = prop === 'isize.w' ? num : fp.w, h = prop === 'isize.h' ? num : fp.h;
+      const err = E.resizeInstance(app.project, one.F, one.b, w, h);
+      if (err) toast(err);
+      app.version++; app.changed(); renderInspector();
+      return;
+    }
+    if (prop.startsWith('size.')) {
+      const name = benchDef();
+      if (!name) return;
+      const err = E.resizeDef(app.project, name, { [prop.slice(5)]: num });
+      if (err) toast(err);
+      app.changed(); renderInspector();
+      return;
+    }
+    if (prop.startsWith('style.')) { styleChange(prop.slice(6), v); app.version++; app.changed(); return; }
+    if (prop === 'def.description' || prop.startsWith('port.') || prop.startsWith('pdef.')) { definitionChange(prop, v, num); return; }
+    if (!one) return;
+    const s = one, b = one.b;
+    if (prop.startsWith('bits.')) {
+      const t = { F: s.F, b }, w = Math.max(1, Math.min(32, b.width || 8));
+      if (prop === 'bits.width' && Number.isInteger(num) && num >= 1 && num <= 32) { b.width = num; b.value = GW.word(b.value || 0, num); app.version++; }
+      else if (prop === 'bits.value' && Number.isFinite(num)) setKnobValue(t, GW.word(num, w));
+      else if (prop.startsWith('bits.bit.')) {
+        const i = Number(prop.slice(9)), cur = GW.word(knobValue(t), w), on = Math.floor(cur / Math.pow(2, i)) % 2;
+        setKnobValue(t, cur + (on ? -1 : 1) * Math.pow(2, i));
+      }
+      app.changed(); renderInspector(); return;
+    }
+    if (prop === 'parts') {
+      const parts = String(v).split(/[ ,]+/).map(Number).filter((x) => Number.isInteger(x) && x >= 1);
+      const trial = Object.assign({}, b, { parts });
+      if (!parts.length || parts.length > 16 || parts.reduce((x, y) => x + y, 0) > 32) toast('Fields are whole numbers of bits, at most 16 fields and 32 bits in all.');
+      else if (!G.canPlace(s.F.sheet, app.project.defs, trial, b)) toast('No room for that many fields here.');
+      else { b.parts = parts; s.F.sheet.wires = s.F.sheet.wires.filter((w) => G.pinOf(s.F.sheet, app.project.defs, w.from) && G.pinOf(s.F.sheet, app.project.defs, w.to)); G.fixRoutes(s.F.sheet, app.project.defs); app.version++; }
+      app.changed(); renderInspector(); return;
+    }
+    if (prop === 'sock.name') { b.name = String(v).trim() || b.type; app.changed(); return; }
+    if (prop === 'table.points') {
+      const pts = String(v).split('\n').map((l) => l.trim().split(/[\s,;]+/).map(Number)).filter((q) => q.length === 2 && q.every(Number.isFinite));
+      if (pts.length < 2) { toast('A table needs two points at least, "x y" a line.'); renderInspector(true); return; }
+      b.points = pts.sort((x, y) => x[0] - y[0]);
+      app.version++; app.changed(); renderInspector(true); return;
+    }
+    if (prop === 'pwlink' && v && app.bridge) {
+      const mine = app.bridge.selfPort(b.type, b.name || b.type);
+      if (mine) b.type === 'out' ? app.bridge.link(mine.id, Number(v)) : app.bridge.link(Number(v), mine.id);
+      return;
+    }
+    if (b.type === 'const' || b.type === 'volts') {
+      const t = { F: s.F, b };
+      if (prop === 'const.value' && Number.isFinite(num)) setKnobValue(t, num);
+      else if (prop === 'const.knob') {
+        const on = $('#inspector [data-prop="const.knob"]').checked, val = knobValue(t);
+        if (on) b.knob = { label: '', min: Math.min(0, val), max: Math.max(1, val * 2 || 1), scale: 'lin' }; else delete b.knob;
+        app.version++; app.changed(); renderInspector();
+      } else if (prop.startsWith('cknob.') && b.knob) {
+        const k = prop.slice(6);
+        b.knob[k] = k === 'min' || k === 'max' ? (Number.isFinite(num) ? num : b.knob[k]) : v;
         app.changed(false);
       }
       return;
     }
-    if (!one) return;
-    const s = one, b = one.b;
-    if (prop === 'window') { b.window = num; app.changed(); return; }
+    if (prop.startsWith('mparam.')) {
+      const id = prop.slice(7), p = G.MODULES[b.type].params.find((q) => q.id === id);
+      if (!p || !Number.isFinite(num)) return;
+      const v = p.int || p.options ? Math.round(num) : num;
+      if (s.F.path) app.project.values[s.F.path + b.id + '#' + id] = v;
+      else { b.params = b.params || {}; b.params[id] = v; }
+      app.changed(!!p.structural); renderInspector();
+      return;
+    }
     if (prop === 'loop') { b.loop = v === '1'; app.changed(); return; }
     if (prop === 'swapall') return;
     if (prop === 'swap') {
@@ -954,13 +1393,34 @@
       if (v) swapChip(s.F, b, v, !!(all && all.checked));
       return;
     }
-    const def = app.project.defs[b.def];
+    app.changed();
+  }
+  // The block editor's fields: the block on the workbench.
+  function definitionChange(prop, v, num) {
+    const name = benchDef(), def = name && app.project.defs[name];
+    if (!def) return;
     if (prop === 'def.description') def.description = v;
-    else if (prop.startsWith('port.')) {
+    else if (prop.startsWith('pdef.')) {
+      const [, i, k] = prop.split('.'), p = def.ports[Number(i)];
+      if (k === 'value' && Number.isFinite(num)) p.value = num;
+      if (k === 'knob') {
+        if ($(`#inspector [data-prop="pdef.${i}.knob"]`).checked) p.knob = { label: p.name, min: Math.min(0, p.value || 0), max: Math.max(1, (p.value || 0) * 2 || 1), scale: (p.value || 0) > 0 ? 'log' : 'lin' };
+        else delete p.knob;
+        if (p.knob && p.knob.scale === 'log') p.knob.min = Math.max(1e-3, (p.value || 1) / 10);
+        app.version++;
+      }
+    } else if (prop.startsWith('port.')) {
       const [, i, k] = prop.split('.');
       const p = def.ports[Number(i)];
       if (k === 'name') p.name = v;
-      else if (Number.isInteger(num) && num >= 0 && num < def.fh && !def.ports.some((q) => q !== p && q.dir === p.dir && q.row === num)) p.row = num;
+      else if (k === 'domain') {
+        const n = E.portChange(app.project, name, () => { if (v === 'float') delete p.domain; else p.domain = v; });
+        if (n) toast(`${plural(n, 'wire')} of the old kind of signal removed.`, 2500);
+        app.version++;
+      } else if (Number.isInteger(num) && num >= 0 && num < def.fh && !def.ports.some((q) => q !== p && q.dir === p.dir && q.row === num)) {
+        E.portChange(app.project, name, () => { p.row = num; });   // moving a port can reorder them: wires stay on it
+        app.version++;
+      }
       else { toast('That row is taken or outside the block.'); renderInspector(); return; }
     }
     app.changed();
@@ -969,35 +1429,43 @@
 
   // ---- status, banner, toast -----------------------------------------------------
   function updateStatus() {
-    const h = app.hover;
+    const h = app.hoverDeep || app.hover, ro = !!(app.hoverDeep && app.hover && app.hoverDeep !== app.hover);
     let s = '';
     if (h) {
-      s = (h.F.chain.length ? 'Board › ' + h.F.chain.join(' › ') : 'Board') + `   ${h.x},${h.y}   ${app.layer === G.TOP ? 'top' : 'bottom'} layer`;
-      const r = regionAt(h);
-      if (r) {
-        const key = h.F.path + r.rid;
-        s += `   ·   ${r.rid}${written(key) ? ' (written)' : ' (constant)'} = ${GW.fmt(app.valueOf(key))}`;
-      } else if (h.occ && h.occ.block) s += `   ·   ${h.occ.block.type === 'comp' ? h.occ.block.def : G.info(h.occ.block.type).title}${h.occ.pad ? ' pad ' + (h.occ.pad.name || h.occ.pad.dir) : ''}`;
-      if (h.F.def) s += `   ·   editing "${h.F.def.name}", shared by ${instances(h.F.def.name)} instance(s)`;
+      s = (h.F.chain.length ? 'Board › ' + h.F.chain.join(' › ') : 'Board') + `   ${h.x},${h.y}`;
+      const pin = pinAt(h), kt = knobAt(h), n = !(h.occ && h.occ.block) ? netAtCell(h) : null;
+      if (kt && kt.param) { const p = paramSpec(kt); s += `   ·   ${p.label} = ${G.Analog.showParam(p, knobValueOf(kt))}`; }
+      else if (kt) { const k = knobOf(kt); s += `   ·   knob ${k.label || ''} = ${GW.fmt(knobValue(kt))}${app.knobState(knobKey(kt)) !== 'ok' ? ' (' + app.knobState(knobKey(kt)) + ')' : ''}`; }
+      else if (pin) {
+        const w = G.isSource(pin) ? G.wiresFrom(h.F.sheet, pin).length : G.wiresInto(h.F.sheet, pin).length;
+        const pad = G.pinOf(h.F.sheet, app.project.defs, pin), v = app.valueOf(h.F.path + pin), wd = app.compiled && app.compiled.widths[h.F.path + pin];
+        const shown = pad.dom === 'fixed' && v !== undefined ? bitsText(v, wd || 1) : GW.fmt(v) + (pad.dom === 'analog' ? ' V' : '');
+        s += `   ·   ${pinName(h.F, pin)} (${pad.dom}) = ${shown}   ·   ${w ? plural(w, 'wire') : 'not wired'}${ro ? '' : ' · drag to wire'}`;
+      } else if (n) s += `   ·   net from ${pinName(h.F, n.net)} = ${GW.fmt(app.valueOf(h.F.path + n.net))}`;
+      else if (h.occ && h.occ.block) s += `   ·   ${h.occ.block.type === 'comp' ? h.occ.block.def : G.info(h.occ.block.type).title}`;
+      if (ro) s += `   ·   inside ${h.F.chain[h.F.chain.length - 1]}: to change it, open it (select it, Edit block…)`;
+      else if (h.F.def) s += `   ·   editing "${h.F.def.name}"`;
     }
     $('#status').innerHTML = `<span>${esc(s)}</span><span class="hint">${esc(hint())}</span>`;
   }
+  const bitsText = (v, w) => (w <= 16 ? Math.round(v).toString(2).padStart(w, '0') + ' = ' : '') + Math.round(v) + ` (${w} bit${w === 1 ? '' : 's'})`;
   // What the pointer and keys do right now.
   function hint() {
     if (app.pasting) return 'click: paste · Shift-click: paste again · Esc: cancel';
     if (app.placing) return 'click: place · R: rotate · Shift-click: place several · Esc: cancel';
-    if (app.route) return 'click: corner · /: flip corner · Tab: via · Esc: done';
-    if (app.tool === 'route') return 'click a pin, a trace or the board to start a trace';
-    if (app.tool === 'erase') return 'drag to erase · Shift: both layers';
-    if (app.tool === 'knob') return 'click a constant net to add or remove a handle';
-    if (app.sel && !E.isEmpty(app.sel)) return 'drag: move · arrows: nudge · Ctrl+C / X / D · Del: delete · Esc: deselect';
-    return 'drag: box-select · click: select · Shift: add · right-drag: pan · wheel: zoom · ?: help';
+    if (app.drag && app.drag.kind === 'pwlink') return 'release on a port of another program, or on a socket, to link them in PipeWire';
+    if (app.drag && app.drag.kind === 'wire') return 'release on a pin to wire it · anywhere else to cancel' + (app.drag.picked ? ' (and remove the wire)' : '');
+    if (app.route) return 'click: corner · /: flip corner · click a pin: finish · Esc: cancel';
+    if (app.tool === 'route') return 'click a pin, or a trace to branch from it, then click corners and finish on a pin';
+    if (app.sel && !E.isEmpty(app.sel)) return 'drag a block: move · drag a trace: reshape · arrows: nudge · Ctrl+C / X / D · Del: delete · Esc: deselect';
+    return 'drag pin → pin: wire · drag a block: move · drag on empty board: select · right-drag: pan · wheel: zoom · ?: help';
   }
   function updateBanner() {
     const m = [];
     if (app.compiled && !app.compiled.ok) m.push(['err', '⚠ ' + app.compiled.errors[0].msg]);
-    if (app.missing.size) m.push(['err', `${app.missing.size} sample stack(s) not stored in this browser: select the Sample block and load the WAV again.`]);
-    if (app.snap && app.snap.bad) m.push(['err', 'The DAC saw NaN or ∞ — press Reset.']);
+    const lw = app.library ? app.library.warnings : [];
+    if (lw.length) m.push(['err', `Library: ${lw[0]}${lw.length > 1 ? ` (and ${lw.length - 1} more)` : ''}`]);
+    if (app.snap && app.snap.bad) m.push(['err', 'An Out socket saw NaN or ∞ — press Reset.']);
     $('#banner').innerHTML = m.map(([k, s]) => `<div class="${k}">${esc(s)}</div>`).join('');
   }
   let toastTimer = null;
@@ -1011,20 +1479,174 @@
   // starts a fresh history (page load).
   function loadProject(p, label) {
     p.values = p.values || {};
+    if (GW.Migrate.isOld(p)) GW.Migrate.project(p);   // saved before wires: painted nets become wires
+    if (GW.Migrate.hasRack(p)) GW.Migrate.unrackProject(p);   // saved before one canvas: the rack moves onto the board
+    if (GW.Migrate.hasSample(p)) GW.Migrate.unsampleProject(p);   // saved before In sockets replaced the WAV player
+    if (GW.Migrate.hasOldConverters(p)) GW.Migrate.convertProject(p);   // saved before converters were library blocks
+    p.version = 5;
+    const refreshed = syncWithLibrary(p);
+    if (refreshed.length && !EMBED) setTimeout(() => toast(`Updated from the library: ${refreshed.join(', ')}.`, 5000), 0);
     app.project = p; app.sel = null; app.placing = null; app.pasting = null; app.route = null; app.hover = null; app.hotRegion = null; app.version++;
     if (label) app.commit(label); else app.history.reset(JSON.stringify(p));
     updatePalette(); app.changed();
     recompile(); renderInspector(); updateToolbar();
-    requestAnimationFrame(() => app.view.fitAll());
+    app.view.fitted = false;
+    requestAnimationFrame(() => { const v = app.view; v.resize(); app.fitView(v, 'board'); v.fitted = true; });
   }
-  $('#examples').innerHTML = '<option value="">Examples…</option>' + GW.EXAMPLES.map((x, i) => `<option value="${i}">${esc(x.title)}</option>`).join('');
+  // A view's first framing after a load: the design's saved opening view, else everything.
+  app.openCamera = null;
+  app.fitView = (v, mode) => {
+    const r = app.openCamera && app.openCamera[mode];
+    if (r) { v.fitRect(r[0], r[1], r[2], r[3], 0); Object.assign(v.cam, v.target); v.anchor = null; v.dirty = true; } else v.fitAll();
+  };
+
+  // ---- the catalogue: curated examples and the block library ------------------------------
+  // Both are design files in the repository (see FORMAT.md): examples/ holds whole
+  // designs, library/ one block each. The library is where every design's blocks
+  // come from, and designs refer to its blocks by name, so curating a block's
+  // insides reaches every design that uses it. Served by tools/serve.py, the page
+  // can also save into both folders ("Save…").
+  const CURATED_KEY = 'samplefactory.curated';
+  app.manifest = null; app.libManifest = null; app.curator = false;
+  app.library = { defs: null, fileOf: {}, warnings: [], source: 'generated', text: {} };
+  const libraryDefs = () => app.library.defs || GW.starterDefs();
+  app.libraryDefs = libraryDefs;
+  try { app.curated = JSON.parse(localStorage.getItem(CURATED_KEY)) || null; } catch (e) { app.curated = null; }
+  function setCurated(c) {
+    app.curated = c;
+    try { c ? localStorage.setItem(CURATED_KEY, JSON.stringify(c)) : localStorage.removeItem(CURATED_KEY); } catch (e) { /* not kept */ }
+    updateCurated();
+  }
+  // The file the design came from, and whether it has changed since it was opened or saved.
+  const stateHash = () => fnv(JSON.stringify(app.project));
+  function updateCurated() {
+    const el = $('#curated'), c = app.curated;
+    if (!el) return;
+    if (!c || !c.file) { el.hidden = true; return; }
+    const dirty = !!app.project && c.saved !== stateHash();
+    el.hidden = false;
+    el.textContent = `${c.folder || (c.kind === 'block' ? 'library' : 'examples')}/${c.file}${dirty ? ' •' : ''}`;
+    el.classList.toggle('dirty', dirty);
+    el.title = (dirty ? 'Changed since it was opened or saved. ' : 'Saved. ') + (app.curator ? 'Ctrl+S (or click) saves it.' : 'Served without tools/serve.py: use Save… to download it.');
+  }
+  app.updateCurated = updateCurated;
+  async function fetchCatalogue() {
+    let man = null, lib = null;
+    try {
+      const r = await fetch('api/curate', { cache: 'no-store' });
+      if (r.ok) { const j = await r.json(); app.curator = !!j.ok; man = j.manifest; lib = j.library; app.trash = j.trash || []; }
+    } catch (e) { /* not the curator server */ }
+    const getJson = async (url) => { try { const r = await fetch(url, { cache: 'no-store' }); return r.ok ? await r.json() : null; } catch (e) { return null; } };
+    if (!man) man = await getJson('examples/index.json');
+    if (!lib) lib = await getJson('library/index.json');
+    app.manifest = man; app.libManifest = lib;
+    if (lib && lib.blocks && lib.blocks.length) {
+      const files = await Promise.all(lib.blocks.map(async (e) => ({ file: e.file, doc: await getJson('library/' + encodeURIComponent(e.file)) })));
+      const missing = files.filter((f) => !f.doc).map((f) => f.file);
+      const L = GW.Format.loadLibrary(files.filter((f) => f.doc));
+      app.library = { defs: L.defs, fileOf: L.fileOf, warnings: missing.map((f) => `${f}: could not be read`).concat(L.warnings), source: 'files', text: {} };
+    } else app.library.warnings = location.protocol === 'file:' ? [] : ['library/ could not be read: using the blocks built into the app'];
+    renderOpenMenu();
+  }
+  app.manifestReady = fetchCatalogue();
+  app.reloadCatalogue = async () => { await fetchCatalogue(); app.library.text = {}; updatePalette(); updateCurated(); };
+
+  // Which blocks in the open design differ from the library. A design remembers, per
+  // block, the library version it started from (project.base: a hash of the block's
+  // text), so an edited block can be told apart from one the library has since improved.
+  const fnv = (t) => { let h = 2166136261; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+  const defText = (d) => GW.Format.stringify(GW.Format.encodeDef(d));
+  const libText = (n) => { const lib = libraryDefs()[n]; if (!lib) return undefined; return app.library.text[n] || (app.library.text[n] = defText(lib)); };
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  // Bring a design up to date with the library: add blocks it doesn't have, note which
+  // ones match, and replace unedited blocks the library has improved (if their pins are
+  // the same). Returns the names replaced.
+  function syncWithLibrary(p) {
+    const lib = libraryDefs(), updated = [];
+    p.base = p.base || {};
+    for (const n of Object.keys(lib)) {
+      const lt = libText(n);
+      if (!p.defs[n]) { p.defs[n] = clone(lib[n]); p.base[n] = fnv(lt); continue; }
+      const t = defText(p.defs[n]);
+      if (t === lt) { p.base[n] = fnv(lt); continue; }
+      if (p.base[n] !== undefined && fnv(t) === p.base[n] && GW.Format.sig(p.defs[n]) === GW.Format.sig(lib[n])) {
+        p.defs[n] = clone(lib[n]); p.base[n] = fnv(lt); updated.push(n);
+      }
+    }
+    return updated;
+  }
+  // name -> 'edited' (changed since it came from the library), 'own' (the design's own
+  // version of a library block) or 'new' (not in the library). Unchanged blocks are absent.
+  function blockStatus() {
+    const p = app.project, out = {};
+    for (const n of Object.keys(p.defs)) {
+      const t = defText(p.defs[n]), lt = libText(n), b = p.base && p.base[n];
+      if (t === lt) continue;
+      out[n] = lt === undefined ? 'new' : b !== undefined && fnv(t) !== b ? 'edited' : 'own';
+    }
+    return out;
+  }
+  app.blockStatus = blockStatus;
+  const STATUS_WORD = { edited: 'edited', own: 'differs from the library', new: 'new, not in the library' };
+
+  function renderOpenMenu() {
+    let h = '<option value="">Open…</option>';
+    const ex = (app.manifest && app.manifest.examples) || [], bl = (app.libManifest && app.libManifest.blocks) || [];
+    if (ex.length) h += '<optgroup label="Examples">' + ex.map((x, i) => `<option value="c:${esc(x.file)}">${i + 1} · ${esc(x.title)}</option>`).join('') + '</optgroup>';
+    if (bl.length) h += '<optgroup label="Library blocks">' + bl.slice().sort((a, b) => a.title.localeCompare(b.title)).map((x) => `<option value="b:${esc(x.file)}">${esc(x.title)}</option>`).join('') + '</optgroup>';
+    if (!ex.length) h += '<optgroup label="Examples (built in)">' + GW.EXAMPLES.map((x, i) => `<option value="g:${i}">${esc(x.title)}</option>`).join('') + '</optgroup>';
+    $('#examples').innerHTML = h;
+  }
+  renderOpenMenu();
+  // Opening replaces the design; say what unsaved block edits there are (undo brings them back).
+  function confirmReplace(what) {
+    const st = blockStatus(), edited = Object.keys(st).filter((n) => st[n] === 'edited' || st[n] === 'new');
+    return confirm(`Open ${what}? This replaces the current design (Ctrl+Z brings it back).` +
+      (edited.length ? `\n\nBlocks with changes not saved to the library: ${edited.join(', ')}.` : ''));
+  }
   $('#examples').addEventListener('change', (e) => {
-    const i = Number(e.target.value); e.target.value = '';
-    if (!GW.EXAMPLES[i] || !confirm(`Load "${GW.EXAMPLES[i].title}"? This replaces the root sheet and refreshes the built-in blocks; blocks you made yourself are kept.`)) return;
-    loadExample(i);
+    const v = e.target.value; e.target.value = '';
+    if (!v) return;
+    if (v.startsWith('c:') || v.startsWith('b:')) {
+      const lib = v.startsWith('b:'), list = lib ? app.libManifest.blocks : app.manifest.examples, it = list.find((x) => x.file === v.slice(2));
+      if (it && confirmReplace(lib ? `the block "${it.title}"` : `"${it.title}"`)) loadDesignFile(it.file, false, lib ? 'library' : 'examples');
+      return;
+    }
+    const i = Number(v.slice(2));
+    if (GW.EXAMPLES[i] && confirmReplace(`"${GW.EXAMPLES[i].title}"`)) loadExample(i);
   });
+  // Open a design document (an example, or a block on its workbench).
+  function openDesign(doc, label, file, folder) {
+    const r = GW.Format.decode(doc, libraryDefs());
+    const m = r.meta || {};
+    if (r.kind === 'block') {
+      // zoomed in, so the block's insides fill the window
+      const d = r.def, a = GW.Format.BENCH_AT, pad = 0.02;
+      app.openCamera = { board: [a - pad * d.fw, a - pad * d.fh, a + d.fw * (1 + pad), a + d.fh * (1 + pad)] };
+    } else app.openCamera = m.camera || null;
+    loadProject(r.project, label);
+    app.host.reset();
+    setRate(r.kind === 'example' && m.rate ? Math.min(RATE_MAX, Math.max(RATE_MIN, Number(m.rate))) : RATE_MAX);
+    app.host.setRunning(true); updateClock();
+    setCurated(file ? { kind: r.kind, folder: folder || 'examples', file, name: r.name, meta: m, saved: stateHash() } : null);
+    if (r.warnings.length) toast(`Opened with ${plural(r.warnings.length, 'warning')}: ${r.warnings.join('; ')}`, 10000);
+    else if (r.kind === 'block' && !EMBED) toast(`The ${r.name} block on its workbench. Edit its insides, then Save… → Block "${r.name}" puts it back in the library.`, 6000);
+    else if (m.note && !EMBED) toast(m.note, 8000);
+    return r;
+  }
+  async function loadDesignFile(file, fresh, folder) {
+    folder = folder || 'examples';
+    try {
+      const res = await fetch(folder + '/' + encodeURIComponent(file), { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+      const doc = await res.json();
+      openDesign(doc, fresh ? null : 'open ' + ((doc.meta && doc.meta.title) || file), file, folder);
+    } catch (err) { toast(`Could not open ${folder}/${file}: ${err.message}`); }
+  }
+  app.loadDesignFile = loadDesignFile; app.openDesign = openDesign;
   function loadExample(i) {
-    loadProject(GW.exampleProject(i, app.project ? app.project.defs : null), app.project ? 'load ' + GW.EXAMPLES[i].title : null);
+    app.openCamera = null; setCurated(null);
+    loadProject(GW.exampleProject(i, app.project ? app.project.defs : null, libraryDefs()), app.project ? 'load ' + GW.EXAMPLES[i].title : null);
     app.host.reset(); setRate(GW.EXAMPLES[i].rate); app.host.setRunning(true); updateClock();
     if (!EMBED) toast(GW.EXAMPLES[i].note, 8000);
   }
@@ -1065,35 +1687,222 @@
     localStorage.setItem(STYLE_KEY, JSON.stringify(app.style));
     app.view.dirty = true;
   });
-  $('#btn-export').addEventListener('click', () => {
+  // ---- design files: export, import, save as example ----------------------------------
+  function download(text, name) {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(app.project)], { type: 'application/json' }));
-    a.download = 'sample-factory.json'; a.click();
-    if (app.running && app.running.players.some((pl) => pl.sample && pl.sample !== GW.Samples.DEMO_ID)) toast('Exported the board. WAV files are not included: load them again after importing.');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = name; a.click();
+  }
+  // The visible part of the board, in cells: the design's opening view.
+  function cameraNow() {
+    const v = app.view, a = v.toWorld(0, 0), b = v.toWorld(v.W, v.H);
+    return v.W > 0 && v.H > 0 ? { board: [a.x, a.y, b.x, b.y].map((x) => Math.round(x * 100) / 100) } : {};
+  }
+  // An example refers to the library's blocks; an export carries copies of them all,
+  // so it opens anywhere.
+  app.designText = (meta, selfContained) => GW.Format.stringify(GW.Format.encode(app.project,
+    meta || (app.curated && app.curated.kind === 'example' && app.curated.meta) || {}, selfContained ? null : libraryDefs()));
+  app.blockText = (name) => GW.Format.stringify(GW.Format.encodeBlock(app.project.defs, name, {}, libraryDefs()));
+  $('#btn-export').addEventListener('click', () => {
+    const meta = Object.assign({}, (app.curated && app.curated.kind === 'example' && app.curated.meta) || {}, { rate: app.host.rate });
+    download(app.designText(meta, true), (app.curated && app.curated.kind === 'example' ? app.curated.file.replace(/\.json$/, '') : 'sample-factory') + '.json');
   });
+
+  // ---- Save…: the whole design as an example, or a block into the library -------------------
+  const rateText = (r) => (r >= RATE_MAX ? 'real time' : rateLabel(r).split(' · ')[0]);
+  let svBlocks = {};   // name -> status, for the "What" choices
+  let svExample = { title: '', file: '' };   // the example fields, kept while a block is chosen
+  // The block the user is looking at or has selected, if any.
+  function blockInFocus() {
+    const one = selBlock();
+    if (one && one.b.type === 'comp') return one.b.def;
+    const F = app.sel ? app.sel.F : app.hover && app.hover.F;
+    return F && F.def ? F.def.name : null;
+  }
+  function openSaveDialog() {
+    const d = $('#save-dlg'), cur = app.curated;
+    const m = (cur && cur.kind === 'example' && cur.meta) || {};
+    svBlocks = blockStatus();
+    const focus = cur && cur.kind === 'block' ? cur.name : blockInFocus();
+    if (focus && app.project.defs[focus] && !svBlocks[focus]) svBlocks[focus] = 'same';
+    const names = Object.keys(svBlocks).sort((a, b) => (svBlocks[a] === 'same') - (svBlocks[b] === 'same') || a.localeCompare(b));
+    $('#sv-what').innerHTML = '<option value="example">The whole design, as an example</option>' +
+      names.map((n) => `<option value="block:${esc(n)}">Block "${esc(n)}" into the library (${svBlocks[n] === 'same' ? 'no changes' : STATUS_WORD[svBlocks[n]]})</option>`).join('');
+    const want = cur && cur.kind === 'block' ? 'block:' + cur.name : focus && svBlocks[focus] && svBlocks[focus] !== 'same' ? 'block:' + focus : 'example';
+    $('#sv-what').value = want;
+    $('#sv-title').value = m.title || '';
+    $('#sv-note').value = m.note || '';
+    $('#sv-rate').innerHTML = `<option value="${app.host.rate}">as now (${esc(rateText(app.host.rate))})</option>` +
+      (app.host.rate < RATE_MAX ? `<option value="${RATE_MAX}">real time</option>` : '') +
+      (m.rate && m.rate !== app.host.rate && m.rate < RATE_MAX ? `<option value="${m.rate}">as saved (${esc(rateText(m.rate))})</option>` : '');
+    $('#sv-cam').checked = true;
+    $('#sv-file').value = cur && cur.kind === 'example' ? cur.file.replace(/\.json$/, '') : '';
+    $('#sv-title').readOnly = false;
+    svWhat();
+    d.showModal();
+    (svTarget() ? $('#sv-desc') : $('#sv-title')).focus();
+  }
+  const svTarget = () => { const v = $('#sv-what').value; return v.startsWith('block:') ? v.slice(6) : null; };
+  // Show the fields for what is being saved.
+  function svWhat() {
+    const n = svTarget();
+    $('#save-dlg').classList.toggle('blockmode', !!n);
+    if (!$('#sv-title').readOnly) svExample = { title: $('#sv-title').value, file: $('#sv-file').value };
+    $('#sv-title').readOnly = !!n;
+    if (n) {
+      $('#sv-title').value = n;
+      $('#sv-desc').value = app.project.defs[n].description || '';
+      $('#sv-file').value = (app.library.fileOf[n] || GW.Format.slug(n) + '.json').replace(/\.json$/, '');
+    } else { $('#sv-title').value = svExample.title; $('#sv-file').value = svExample.file; }
+    $('#sv-save').textContent = n ? 'Save to library/' : 'Save to examples/';
+    $('#sv-save').disabled = !app.curator;
+    $('#sv-save').title = app.curator ? '' : 'Only when the app is served by tools/serve.py';
+    svStatus();
+  }
+  function svFile() { return GW.Format.slug($('#sv-file').value.trim() || $('#sv-title').value) + '.json'; }
+  // Blocks that saving `n` also saves: the ones inside it that differ from the library, innermost first.
+  function svChain(n) {
+    const st = blockStatus(), defs = app.project.defs;
+    const deps = GW.Format.depsOf(defs, [n]).filter((x) => st[x]), done = [], left = new Set(deps);
+    while (left.size) {
+      const next = [...left].find((x) => GW.Format.depsOf(defs, [x]).every((y) => !left.has(y))) || [...left][0];
+      done.push(next); left.delete(next);
+    }
+    return done;
+  }
+  function svStatus() {
+    const n = svTarget(), f = svFile();
+    let s;
+    if (n) {
+      const chain = svChain(n), users = Object.keys(app.project.defs).filter((x) => x !== n && GW.Format.depsOf(app.project.defs, [x]).includes(n));
+      const pinsChanged = libraryDefs()[n] && GW.Format.sig(libraryDefs()[n]) !== GW.Format.sig(app.project.defs[n]);
+      s = `File: library/${f}` + (app.library.fileOf[n] ? ' (replaces the library\'s version)' : ' (a new block in the library)') + '.';
+      if (chain.length) s += ` Also saves the blocks inside it that changed: ${chain.join(', ')}.`;
+      s += ' Every example and block that uses it will use this version.';
+      if (users.length) s += ` In the library, ${users.join(', ')} contain${users.length === 1 ? 's' : ''} it.`;
+      if (pinsChanged) s += ' Its pins have changed: the files that use it are updated too, their wires following its ports by name.';
+    } else {
+      const exists = app.manifest && app.manifest.examples.some((x) => x.file === f);
+      const own = Object.entries(blockStatus()).filter(([x]) => GW.Format.usedDefs(app.project).includes(x)).map(([x]) => x);
+      s = `File: examples/${f}` + (exists ? ' (replaces the one in the menu)' : ' (new; added at the end of the menu)') + '.';
+      if (own.length) s += ` It keeps its own versions of ${own.join(', ')} (they differ from the library); to share them, save them to the library first.`;
+    }
+    if (!app.curator) s += ' This page is not served by tools/serve.py, so it can only download the file.';
+    $('#sv-status').textContent = s;
+  }
+  function svMeta() {
+    const meta = { title: $('#sv-title').value.trim() || 'Untitled', note: $('#sv-note').value.trim(), rate: Number($('#sv-rate').value) };
+    if (!meta.note) delete meta.note;
+    if ($('#sv-cam').checked) meta.camera = cameraNow();
+    return meta;
+  }
+  // The block's description is part of the block: an edit like any other.
+  function svApplyDescription(n) {
+    const d = app.project.defs[n], v = $('#sv-desc').value.trim();
+    if ((d.description || '') !== v) { d.description = v; app.changed(); app.commit('describe ' + n); }
+  }
+  // The curator server's requests (tools/serve.py).
+  async function api(method, path, body) {
+    const r = await fetch('api/' + path, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) });
+    let j;
+    try { j = await r.json(); } catch (e) { j = { ok: false, error: r.statusText }; }
+    if (!r.ok || !j.ok) throw new Error(j.error || r.statusText);
+    if (j.trash) app.trash = j.trash;
+    return j;
+  }
+  const put = (folder, file, text) => api('PUT', `${folder}/${file}`, text);
+  for (const id of ['#sv-title', '#sv-file']) $(id).addEventListener('input', svStatus);
+  $('#sv-what').addEventListener('change', svWhat);
+  $('#sv-download').addEventListener('click', () => {
+    const n = svTarget();
+    if (n) { svApplyDescription(n); download(app.blockText(n), svFile()); }
+    else download(app.designText(svMeta()), svFile());
+    $('#save-dlg').close();
+  });
+  // Save block n into library/<file>, after the blocks inside it that changed.
+  async function saveBlock(n, file) {
+    const saved = [], repinned = [];
+    for (const x of svChain(n).concat([n])) {
+      const was = libraryDefs()[x];
+      if (was && GW.Format.sig(was) !== GW.Format.sig(app.project.defs[x])) repinned.push(x);
+      const f = x === n ? file : app.library.fileOf[x] || GW.Format.slug(x) + '.json';
+      const j = await put('library', f, app.blockText(x));
+      // the library now has this version: designs refer to it from here on
+      app.library.defs = Object.assign({}, libraryDefs(), { [x]: clone(app.project.defs[x]) });
+      app.library.fileOf[x] = f; delete app.library.text[x];
+      app.project.base = app.project.base || {};
+      app.project.base[x] = fnv(libText(x));
+      app.libManifest = j.manifest;
+      saved.push(`library/${f}`);
+    }
+    // its pins changed: the files that use it are brought up to date (wires follow the ports by name)
+    if (repinned.length) {
+      const updated = await app.files.updateUsers(repinned);
+      if (updated.length) saved.push(`and updated ${updated.length} file${updated.length === 1 ? '' : 's'} that use${updated.length === 1 ? 's' : ''} ${repinned.join(', ')} (${updated.join(', ')})`);
+    }
+    if (app.curated && app.curated.kind === 'block' && app.curated.name === n) setCurated(Object.assign({}, app.curated, { file, saved: stateHash() }));
+    renderOpenMenu(); updatePalette();
+    return saved;
+  }
+  async function saveExample(meta, file) {
+    const j = await put('examples', file, app.designText(meta));
+    app.manifest = j.manifest; renderOpenMenu();
+    setCurated({ kind: 'example', folder: 'examples', file, meta, saved: stateHash() });
+    return j;
+  }
+  // Ctrl+S: the open example or block, back to its file, as it is; anything else opens Save….
+  async function quickSave() {
+    const c = app.curated;
+    if (!c || !app.curator || !c.file) { openSaveDialog(); return; }
+    try {
+      if (c.kind === 'block') { const saved = await saveBlock(c.name, c.file); toast(`Saved ${saved.join(', ')}.`, 2500); }
+      else { await saveExample(c.meta || {}, c.file); toast(`Saved examples/${c.file}.`, 2500); }
+    } catch (err) { toast('Could not save: ' + err.message, 6000); }
+  }
+  app.quickSave = quickSave;
+  $('#sv-save').addEventListener('click', async () => {
+    const n = svTarget();
+    try {
+      if (n) {
+        svApplyDescription(n);
+        const saved = await saveBlock(n, svFile());
+        $('#save-dlg').close();
+        toast(`Saved ${saved.join(', ')}.`, 4000);
+      } else {
+        const meta = svMeta(), file = svFile(), exists = app.manifest && app.manifest.examples.some((x) => x.file === file);
+        if (exists && !(app.curated && app.curated.kind === 'example' && app.curated.file === file) && !confirm(`examples/${file} already exists. Replace it?`)) return;
+        const j = await saveExample(meta, file);
+        $('#save-dlg').close();
+        toast(`Saved examples/${file}${j.replaced ? ' (replaced)' : ''}. It is in the Open menu.`, 4000);
+      }
+    } catch (err) { $('#sv-status').textContent = 'Could not save: ' + err.message; }
+  });
+  $('#btn-save-example').addEventListener('click', openSaveDialog);
+  $('#curated').addEventListener('click', quickSave);
+  // The Files manager (files.js): examples and blocks, new, open, duplicate, rename, delete, reorder, trash.
+  app.files = new GW.Files(app, { api, put, libraryDefs, setCurated, stateHash, loadDesignFile, openDesign, renderOpenMenu, confirmReplace, toast, clone });
+  $('#btn-files').addEventListener('click', () => app.files.open());
   $('#btn-import').addEventListener('click', () => $('#file-input').click());
   $('#file-input').addEventListener('change', async (e) => {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
     try {
-      const p = JSON.parse(await f.text());
-      if (!p.root || !p.defs) throw new Error('not a Sample Factory file');
-      if (confirm('Replace the current project? (Ctrl+Z brings it back.)')) loadProject(p, 'import');
+      const doc = JSON.parse(await f.text());
+      GW.Format.decode(doc);   // check it before asking
+      if (confirm('Replace the current project? (Ctrl+Z brings it back.)')) openDesign(doc, 'import', null);
     } catch (err) { toast('Import failed: ' + err.message); }
   });
   $('#btn-help').addEventListener('click', () => $('#help-dlg').showModal());
   document.querySelectorAll('dialog .close').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
+
+  Object.assign(app, { toast, renderInspector, updateToolbar, updatePalette, updateStatus, updateClock, setRate });
 
   // ---- start ------------------------------------------------------------------------
   app.host = new GW.Host((snap) => {
     const wasBad = app.snap && app.snap.bad;
     app.snap = snap;
     $('#ticks').textContent = 'tick ' + snap.ticks.toLocaleString('en-US');
-    const live = document.querySelector('#inspector [data-live="pos"]'), one = selBlock();
-    if (live && one && app.running) {
-      const pl = app.running.players.find((x) => x.path === one.F.path + one.b.id);
-      if (pl && snap.v) live.textContent = Math.round(snap.v[pl.v] || 0).toLocaleString('en-US');
-    }
+    $('#ticks').title = `${(snap.ticks / G.FS).toFixed(4)} s of simulated time (a tick is always 1/48 000 s)`;
     app.view.dirty = true;
     if (!!snap.bad !== !!wasBad) updateBanner();
   }, (msg) => { if (msg) toast(msg); updateClock(); });
@@ -1101,21 +1910,30 @@
   $('#rate').value = 1;
 
   if (EMBED) document.body.classList.add('embed');
-  let saved = null;
-  try { saved = EMBED ? null : JSON.parse(localStorage.getItem(STORE) || localStorage.getItem(OLD_STORE)); } catch (e) { saved = null; }
-  if (Q.has('example')) loadExample(Number(Q.get('example')) || 0);
-  else if (saved && saved.root && saved.version === 2) { loadProject(saved); updateClock(); }
-  else loadExample(2);
-  if (Q.has('rate')) setRate(Math.min(RATE_MAX, Math.max(RATE_MIN, Number(Q.get('rate')) || RATE_MAX)));
-  if (Q.has('focus')) setTimeout(() => focusOn(Q.get('focus')), 100);
-  setTool('select');
-
   // Hooks for the interactivity tests (tests/ui/ui-tests.js, run by tests/run-ui.py).
   app.loadExample = loadExample;
+  app.pinAt = pinAt;
   app.select = select;
-  if (Q.get('uitest') === '1') {
-    const sc = document.createElement('script');
-    sc.src = 'tests/ui/ui-tests.js';
-    document.body.appendChild(sc);
-  }
+
+  // Start once the library is in: every design's blocks come from it.
+  app.started = (async () => {
+    await app.manifestReady;
+    let saved = null;
+    try { saved = EMBED ? null : JSON.parse(localStorage.getItem(STORE) || localStorage.getItem(OLD_STORE)); } catch (e) { saved = null; }
+    const firstExample = app.manifest && app.manifest.examples.find((x) => x.file === 'sequenced-synth.json');
+    if (Q.has('design')) { loadExample(2); await loadDesignFile(Q.get('design'), true); }
+    else if (Q.has('example')) loadExample(Number(Q.get('example')) || 0);
+    else if (saved && saved.root && saved.version >= 2) { loadProject(saved); updateClock(); } else if (firstExample) await loadDesignFile(firstExample.file, true);
+    else loadExample(2);
+    if (Q.has('rate')) setRate(Math.min(RATE_MAX, Math.max(RATE_MIN, Number(Q.get('rate')) || RATE_MAX)));
+    if (Q.has('focus')) setTimeout(() => focusOn(Q.get('focus')), 100);
+    if (Q.has('files')) app.files.open(Q.get('files') || 'examples');   // index.html?files=library opens Files on that tab
+    setTool('select');
+    updateBanner(); updateCurated();
+    if (Q.get('uitest') === '1') {
+      const sc = document.createElement('script');
+      sc.src = 'tests/ui/ui-tests.js';
+      document.body.appendChild(sc);
+    }
+  })();
 })();

@@ -1,0 +1,62 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "ADC"},
+  "uses": {},
+  "block": {
+    "name": "ADC",
+    "description": "Analog to fixed point, bipolar: ±range volts become the 8-bit two's-complement codes, rounded, and clipped at the ends. Voltmeter, ÷ range, then a Word that takes a fraction of full scale.",
+    "fw": 3,
+    "fh": 3,
+    "s": 8,
+    "ports": [
+      {
+        "dir": "in",
+        "row": 0,
+        "name": "range",
+        "value": 5,
+        "knob": {"label": "range V", "min": 0.1, "max": 12, "scale": "log"}
+      },
+      {"dir": "in", "row": 1, "name": "in", "domain": "analog"},
+      {"dir": "out", "row": 1, "name": "out", "domain": "fixed"}
+    ],
+    "nextId": 17,
+    "blocks": [
+      {"id": "b1", "type": "voltmeter", "x": 2, "y": 11},
+      {"id": "b2", "type": "word", "x": 19, "y": 11, "params": {"bits": 8, "signed": 1, "mode": 1, "scale": 1}},
+      {"id": "b4", "type": "log2", "x": 4, "y": 2},
+      {"id": "b5", "type": "mul", "x": 8, "y": 1},
+      {"id": "b6", "type": "exp2", "x": 12, "y": 2},
+      {"id": "b7", "type": "mul", "x": 16, "y": 6},
+      {"id": "b8", "type": "const", "x": 8, "y": 5, "value": -1}
+    ],
+    "wires": [
+      {"id": "w3", "from": "port.i1", "to": "b1.i0"},
+      {"id": "w9", "from": "b8.o0", "to": "b5.i1", "path": [[8,5],[8,4],[8,3]]},
+      {"id": "w10", "from": "port.i0", "to": "b4.i0", "path": [[0,4],[1,4],[2,4],[3,4],[4,4],[4,3],[4,2]]},
+      {"id": "w11", "from": "b4.o0", "to": "b5.i0", "path": [[6,2],[6,1],[7,1],[8,1]]},
+      {"id": "w12", "from": "b5.o0", "to": "b6.i0", "path": [[10,2],[11,2],[12,2]]},
+      {
+        "id": "w13",
+        "from": "b1.o0",
+        "to": "b7.i0",
+        "path": [[4,12],[5,12],[6,12],[7,12],[8,12],[9,12],[10,12],[11,12],[12,12],[13,12],[14,12],[15,12],[15,11],[15,10],[15,9],[15,8],[15,7],[15,6],[16,6]]
+      },
+      {
+        "id": "w14",
+        "from": "b6.o0",
+        "to": "b7.i1",
+        "path": [[14,2],[14,3],[14,4],[14,5],[14,6],[14,7],[14,8],[15,8],[16,8]]
+      },
+      {
+        "id": "w15",
+        "from": "b7.o0",
+        "to": "b2.i0",
+        "path": [[18,7],[19,7],[19,8],[19,9],[19,10],[18,10],[18,11],[18,12],[19,12]]
+      },
+      {"id": "w16", "from": "b2.o0", "to": "port.o0", "path": [[21,12],[22,12],[23,12]]}
+    ]
+  },
+  "defs": {}
+}

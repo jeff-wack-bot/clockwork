@@ -1,0 +1,50 @@
+{
+  "format": "sample-factory-design",
+  "version": 6,
+  "kind": "block",
+  "meta": {"title": "Decay"},
+  "uses": {},
+  "block": {
+    "name": "Decay",
+    "description": "Percussive envelope: on a trigger the flip-flop is loaded with 1, otherwise with env·decay.",
+    "fw": 2,
+    "fh": 1,
+    "s": 8,
+    "iw": 12,
+    "ih": 6,
+    "ports": [
+      {"dir": "in", "row": 0, "name": "trig", "value": 0},
+      {"dir": "out", "row": 0, "name": "env"}
+    ],
+    "nextId": 20,
+    "blocks": [
+      {"id": "b1", "type": "switch", "x": 5, "y": 1},
+      {"id": "b2", "type": "delay", "x": 8, "y": 2},
+      {"id": "b3", "type": "mul", "x": 2, "y": 3},
+      {"id": "r4", "type": "const", "x": 4, "y": 1, "value": 1},
+      {
+        "id": "r5",
+        "type": "const",
+        "x": 1,
+        "y": 5,
+        "value": 0.9998,
+        "knob": {"label": "decay", "min": 0.999, "max": 0.99999, "scale": "lin"}
+      }
+    ],
+    "wires": [
+      {"id": "w11", "from": "r5.o0", "to": "b3.i1", "path": [[1,5],[2,5]]},
+      {"id": "w13", "from": "b1.o0", "to": "b2.i0", "path": [[7,2],[8,2]]},
+      {
+        "id": "w14",
+        "from": "b2.o0",
+        "to": "b3.i0",
+        "path": [[10,2],[10,1],[10,0],[9,0],[8,0],[7,0],[6,0],[5,0],[4,0],[3,0],[2,0],[2,1],[2,2],[2,3]]
+      },
+      {"id": "w16", "from": "b3.o0", "to": "b1.i2", "path": [[4,4],[5,4],[5,3]]},
+      {"id": "w17", "from": "r4.o0", "to": "b1.i1", "path": [[4,1],[5,1]]},
+      {"id": "w18", "from": "b2.o0", "to": "port.o0", "path": [[10,2],[10,3],[11,3]]},
+      {"id": "w19", "from": "port.i0", "to": "b1.i0", "path": [[0,3],[0,2],[1,2],[2,2],[3,2],[4,2],[5,2]]}
+    ]
+  },
+  "defs": {}
+}
